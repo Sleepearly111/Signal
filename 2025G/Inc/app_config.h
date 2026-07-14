@@ -5,22 +5,22 @@
 /* TODO: 实测标定 — 板子到了后修改以下值 */
 
 /* AD603 增益曲线: Gain(dB) = Vg × SLOPE + OFFSET
- * 典型值: SLOPE = 40dB/V, OFFSET = 10dB (Vg=0V 时的增益)
- * 标定方法: Vg分别给 0V, 0.5V, 1.0V，测实际输出Vpp，反算dB
+ * 店家实测公式: G = 76.4812×Vg - 50.592 (dB)
+ * 有效范围: Vg=0.4~1.446V 对应 -20~60dB
  */
 #define AD603_VG_MIN      0.0f
-#define AD603_VG_MAX      1.0f
-#define AD603_GAIN_SLOPE  40.0f   /* TODO: 实测标定 */
-#define AD603_GAIN_OFFSET 10.0f   /* TODO: 实测标定 */
+#define AD603_VG_MAX      1.446f
+#define AD603_GAIN_SLOPE  76.4812f   /* 店家标定 */
+#define AD603_GAIN_OFFSET -50.592f   /* 店家标定 */
 
 /* 内部DAC: STM32F407 DAC1 CH1 → AD603 VG引脚
  * DAC 满幅输出参考电压 (V)
  */
-#define AD603_DAC_VREF    3.246f  /* TODO: 实测标定，万用表测DAC输出满幅值 */
+#define AD603_DAC_VREF    3.3f    /* 实测标定: PA4满幅=3.3V */
 
 /* ===== 信号链幅度参数 ===== */
 /* AD9833 默认输出幅度 Vpp (典型值 0.6Vpp) */
-#define AD9833_DEFAULT_VPP 0.6f   /* TODO: 实测标定 */
+#define AD9833_DEFAULT_VPP 0.66f   /* 实测标定: B口 660mVpp */
 
 /* AD8052 固定放大倍数 */
 #define AD8052_GAIN       5.0f    /* TODO: 实测标定 */

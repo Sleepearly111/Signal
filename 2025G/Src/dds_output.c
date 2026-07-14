@@ -29,7 +29,11 @@ void DDS_Output_Init(void)
 void DDS_SetFrequency(uint32_t freq_hz)
 {
     current_freq_hz = freq_hz;
-    /* 使用 AD9833 A 通道，正弦波 */
+    /* 分别写入 A/B 两个 AD9833 */
+    extern uint8_t wave_flag;
+    wave_flag = 0;
+    AD9833_SetFrequencyQuick((float)freq_hz, AD9833_OUT_SINUS);
+    wave_flag = 1;
     AD9833_SetFrequencyQuick((float)freq_hz, AD9833_OUT_SINUS);
 }
 

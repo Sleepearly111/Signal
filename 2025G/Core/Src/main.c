@@ -58,7 +58,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+extern DAC_HandleTypeDef hdac;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,6 +96,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     /* 按键上拉输入、下降沿触发，读回低电平才确认真正按下 */
     if (GPIO_Pin == KEY0_Pin) {
         if (HAL_GPIO_ReadPin(KEY0_GPIO_Port, KEY0_Pin) == GPIO_PIN_RESET) {
+            extern volatile uint8_t key;
+            key = 1;            /* 通知标定按键循环 */
             UI_KeyCallback(0);  /* KEY0 → 基本(3) */
         }
     } else if (GPIO_Pin == KEY1_Pin) {
@@ -299,6 +301,7 @@ int main(void)
   printf("2025G 电路模型探究装置 启动\r\n");
 
   /* ---- 应用模块初始化 ---- */
+  set_clock();         /* 给AD9833提供时钟 MCO2(PC9) */
   DDS_Output_Init();
   ADC_Measure_Init();
 
@@ -314,6 +317,25 @@ int main(void)
   AdvLearn_Init();   /* 发挥(1)学习模块初始化 */
   AdvReplay_Init();  /* 发挥(2)复现模块初始化 */
   UI_UpdateDisplay(1000, 2.0f);
+
+  /* DAC CH1 显式配置（CubexMX 只配了 CH2） */
+  {
+      DAC_ChannelConfTypeDef ch1_cfg = {0};
+      ch1_cfg.DAC_Trigger = DAC_TRIGGER_NONE;
+      ch1_cfg.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
+      HAL_DAC_ConfigChannel(&hdac, &ch1_cfg, DAC_CHANNEL_1);
+  }
+
+  /* ===== TODO: 标定④ — Vg=1V固定输出，测完删 ===== */
+  {
+      uint32_t dac_val = (uint32_t)(0.9f * 4095.0f / 3.3f);
+      HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
+      HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
+      DDS_SetFrequency(1000);
+      printf("[CAL4] Vg=0.9V (DAC=%lu/4095) 输入Vpp=? 输出Vpp=?\r\n", dac_val);
+      while (1);
+  }
+  /* ===== 标定④ end ===== */
 
   HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);  /* 就绪指示 */
   /* USER CODE END 2 */

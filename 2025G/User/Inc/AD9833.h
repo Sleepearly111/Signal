@@ -77,6 +77,7 @@ extern uint8_t force;     //0:写频率 1:写频率字
 extern uint8_t wave_flag;  //0:A路 1:B路
 
 void set_clock(void);//配置PC9(MCO2)并输出时钟
+uint32_t AD9833_GetFreqWord(float hz);//频率值→频率字
 
 #ifdef __cplusplus
 }

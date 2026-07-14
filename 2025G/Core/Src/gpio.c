@@ -81,12 +81,6 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PE9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
   /*Configure GPIO pins : AD9833A_FSYNC_Pin AD9833A_SCLK_Pin AD9833A_SDATA_Pin */
   GPIO_InitStruct.Pin = AD9833A_FSYNC_Pin|AD9833A_SCLK_Pin|AD9833A_SDATA_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;

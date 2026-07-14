@@ -7,7 +7,7 @@ uint32_t ch1_freqword = 0;
 uint8_t wave_flag = 1;
 uint8_t force = 0; //0：写频率 1： 频率字
 
-#define FCLK         10000000U
+#define FCLK         10000000U  /* AD9833 实际时钟 10MHz */
 #define RealFreDat   (268435456.0 / FCLK)//总的公式为 Fout=（Fclk/2的28次方）*28位寄存器的值
 
 static void ad9833_write_bit_a(uint8_t bit)
@@ -35,6 +35,8 @@ static void ad9833_write_bit_b(uint8_t bit)
 void set_clock(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();  /* 必须使能 GPIOC 时钟，否则 MCO 不生效 */
 
     GPIO_InitStructure.Pin = GPIO_PIN_9;
     GPIO_InitStructure.Mode = GPIO_MODE_AF_PP;
@@ -224,6 +226,17 @@ void AD9833_Init(void)
     AD9833_Reset();
 
     HAL_Delay(10);
+
+    /* 两个芯片都退出复位，并设成正弦波模式 */
+    wave_flag = 0;
+    AD9833_SetFrequencyQuick(1000.0f, AD9833_OUT_SINUS);
+    wave_flag = 1;
+    AD9833_SetFrequencyQuick(1000.0f, AD9833_OUT_SINUS);
+}
+
+uint32_t AD9833_GetFreqWord(float hz)
+{
+    return (uint32_t)(RealFreDat * hz);
 }
 
 void AD9833_Reset(void)
