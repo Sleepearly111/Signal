@@ -292,6 +292,7 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM7_Init();
   MX_DAC_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   setvbuf(stdout, NULL, _IONBF, 0);   /* printf 无缓冲，立即发送 */
 
