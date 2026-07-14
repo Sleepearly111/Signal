@@ -1,0 +1,23 @@
+# 编译中间产物（cmake 每次重新生成，绝不入库）
+build/
+*.o
+*.elf
+*.map
+*.bin
+*.hex
+*.list
+
+# CubeMX 临时文件
+mx.scratch
+
+# 工具/编辑器本地文件
+.claude/
+.settings/
+
+# 说明：.vscode/ 有意保留（通用构建/调试配置，随模板复制）
+
+# Build logs / temp
+*.log
+out.log
+err.log
+*.orig

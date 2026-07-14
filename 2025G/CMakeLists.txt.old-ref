@@ -1,0 +1,153 @@
+cmake_minimum_required(VERSION 3.16)
+project(2025G C ASM)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# ============================================================
+# 交叉编译工具链
+# ============================================================
+set(TOOLCHAIN_PREFIX arm-none-eabi-)
+set(CMAKE_C_COMPILER    ${TOOLCHAIN_PREFIX}gcc)
+set(CMAKE_ASM_COMPILER  ${TOOLCHAIN_PREFIX}gcc)
+set(CMAKE_CXX_COMPILER  ${TOOLCHAIN_PREFIX}g++)
+
+# ============================================================
+# MCU 定义
+# ============================================================
+set(CPU_FLAGS   -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard)
+set(CPU_DEFINES STM32F407xx USE_HAL_DRIVER ARM_MATH_CM4)
+
+# ============================================================
+# 路径
+# ============================================================
+set(TEST0_DIR    ${CMAKE_CURRENT_SOURCE_DIR}/../test0)
+set(HAL_DIR      ${TEST0_DIR}/Drivers/STM32F4xx_HAL_Driver)
+set(CMSIS_DIR    ${TEST0_DIR}/Drivers/CMSIS)
+set(CMSIS_DSP    ${TEST0_DIR}/Middlewares/ST/ARM/DSP)
+
+# 2025G 头文件
+set(APP_INC_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/Inc)
+
+# test0 头文件
+set(CORE_INC     ${TEST0_DIR}/Core/Inc)
+set(USER_INC     ${TEST0_DIR}/User/Inc)
+set(CALC_INC     ${TEST0_DIR}/User/Inc/CALCULATE)
+
+include_directories(
+    ${APP_INC_DIR}
+    ${CORE_INC}
+    ${USER_INC}
+    ${CALC_INC}
+    ${HAL_DIR}/Inc
+    ${CMSIS_DIR}/Include
+    ${CMSIS_DIR}/Device/ST/STM32F4xx/Include
+    ${CMSIS_DSP}/Include
+)
+
+# ============================================================
+# 源文件
+# ============================================================
+
+# --- 2025G 应用层 ---
+set(APP_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/dds_output.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/adc_measure.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/transfer_calc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Src/ui_basic.c
+)
+
+# --- 复用 test0 外设驱动 ---
+set(DRIVER_SOURCES
+    ${TEST0_DIR}/User/Src/AD9833.c
+    ${TEST0_DIR}/User/Src/ADS8688.c
+)
+
+# --- test0 Core HAL 驱动 (CubeMX 生成) ---
+# 注意: 不编译 Core/Src/main.c —— 2025G/Src/main.c 已自带
+#       main()/SystemClock_Config()/Error_Handler()，编进来会重复定义。
+set(CORE_SOURCES
+    ${TEST0_DIR}/Core/Src/gpio.c
+    ${TEST0_DIR}/Core/Src/adc.c
+    ${TEST0_DIR}/Core/Src/dma.c
+    ${TEST0_DIR}/Core/Src/tim.c
+    ${TEST0_DIR}/Core/Src/usart.c
+    ${TEST0_DIR}/Core/Src/dac.c              # 需 CubeMX 使能 DAC1 CH1(PA4) 后生成
+    ${TEST0_DIR}/Core/Src/stm32f4xx_it.c     # SysTick/USART/EXTI 中断处理 (HAL_Delay/串口/按键)
+    ${TEST0_DIR}/Core/Src/stm32f4xx_hal_msp.c # 外设 GPIO/时钟 MSP 初始化
+)
+
+# --- HAL 库 ---
+file(GLOB HAL_SOURCES
+    ${HAL_DIR}/Src/stm32f4xx_hal.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_cortex.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_rcc.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_gpio.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_dma.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_adc.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_tim.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_uart.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_dac.c
+    ${HAL_DIR}/Src/stm32f4xx_hal_dac_ex.c
+)
+
+# --- CMSIS 启动文件 ---
+set(STARTUP_FILE ${TEST0_DIR}/startup_stm32f407xx.s)
+set(SYSTEM_FILE  ${CMSIS_DIR}/Device/ST/STM32F4xx/Source/Templates/system_stm32f4xx.c)
+
+# ============================================================
+# CMSIS-DSP 库
+# ============================================================
+set(DSP_LIB ${CMSIS_DSP}/Lib/libarm_cortexM4lf_math.a)
+
+# ============================================================
+# 编译选项
+# ============================================================
+add_compile_options(
+    ${CPU_FLAGS}
+    -Wall -Wextra
+    -ffunction-sections -fdata-sections
+    -Wno-unused-parameter
+)
+
+foreach(def ${CPU_DEFINES})
+    add_compile_options(-D${def})
+endforeach()
+
+# ============================================================
+# 可执行文件
+# ============================================================
+add_executable(${PROJECT_NAME}
+    ${APP_SOURCES}
+    ${DRIVER_SOURCES}
+    ${CORE_SOURCES}
+    ${HAL_SOURCES}
+    ${STARTUP_FILE}
+    ${SYSTEM_FILE}
+)
+
+target_link_libraries(${PROJECT_NAME}
+    ${DSP_LIB}
+    m          # libm (math.h)
+    c          # libc
+    nosys      # _exit, _sbrk 等桩函数
+)
+
+target_link_options(${PROJECT_NAME} PRIVATE
+    -T${TEST0_DIR}/STM32F407XX_FLASH.ld
+    ${CPU_FLAGS}
+    -specs=nosys.specs
+    -specs=nano.specs
+    -Wl,--gc-sections
+    -Wl,--print-memory-usage
+)
+
+# ============================================================
+# 烧录目标
+# ============================================================
+add_custom_target(flash
+    COMMAND openocd -f ${TEST0_DIR}/openocd.cfg
+        -c \"program ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.elf verify reset exit\"
+    DEPENDS ${PROJECT_NAME}
+)
