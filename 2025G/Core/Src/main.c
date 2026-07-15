@@ -74,10 +74,7 @@ void SystemClock_Config(void);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1) {
-        uint8_t byte;
-        HAL_UART_Receive(huart, &byte, 1, 0);
-        UI_UART_RxCallback(byte);
-        __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
+        UI_UART_RxCompleteCallback();
     }
 }
 
@@ -326,16 +323,7 @@ int main(void)
       HAL_DAC_ConfigChannel(&hdac, &ch1_cfg, DAC_CHANNEL_1);
   }
 
-  /* ===== TODO: 标定④ — Vg=1V固定输出，测完删 ===== */
-  {
-      uint32_t dac_val = (uint32_t)(0.9f * 4095.0f / 3.3f);
-      HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
-      HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
-      DDS_SetFrequency(1000);
-      printf("[CAL4] Vg=0.9V (DAC=%lu/4095) 输入Vpp=? 输出Vpp=?\r\n", dac_val);
-      while (1);
-  }
-  /* ===== 标定④ end ===== */
+  /* 标定④的固定输出/while(1) 已移除：否则界面命令无法进入主循环。 */
 
   HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);  /* 就绪指示 */
   /* USER CODE END 2 */
@@ -344,6 +332,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    UI_Service();            /* 在主循环解析串口屏命令，避免中断内阻塞发送 */
     ADS8688_Service();       /* 维持 ADC 数据就绪 */
     ADC_Measure_Service();   /* 采集中则收集数据点 */
     AdvLearn_Service();      /* 发挥(1)学习状态机推进(IDLE时快速返回) */

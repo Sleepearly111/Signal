@@ -20,8 +20,11 @@ extern volatile float    g_set_vpp;        /* 用户设定靶电压 Vpp */
 /* UI 初始化: 串口屏 + 按键中断 */
 void UI_Init(void);
 
-/* 串口屏命令解析 (主循环中调用) */
+/* 串口屏命令解析（由 UI_Service 在主循环中调用） */
 void UI_ProcessCommand(uint8_t *buf, uint16_t len);
+
+/* 处理串口屏已接收的完整命令（主循环中调用） */
+void UI_Service(void);
 
 /* 更新串口屏显示 */
 void UI_UpdateDisplay(uint32_t freq_hz, float vpp);
@@ -29,7 +32,10 @@ void UI_UpdateDisplay(uint32_t freq_hz, float vpp);
 /* 用户按键触发处理 (在 EXTI 回调中调用) */
 void UI_KeyCallback(uint8_t key_id);
 
-/* USART1 RXNE 中断逐字节回调 */
+/* USART1 接收完成回调：由 HAL_UART_RxCpltCallback 调用 */
+void UI_UART_RxCompleteCallback(void);
+
+/* USART1 中断逐字节入队（不要在中断中直接更新屏幕） */
 void UI_UART_RxCallback(uint8_t byte);
 
 /* 向串口屏发送指令(发挥模块也用) */
