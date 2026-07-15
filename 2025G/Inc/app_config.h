@@ -5,13 +5,13 @@
 /* TODO: 实测标定 — 板子到了后修改以下值 */
 
 /* AD603 增益曲线: Gain(dB) = Vg × SLOPE + OFFSET
- * 店家实测公式: G = 76.4812×Vg - 50.592 (dB)
- * 有效范围: Vg=0.4~1.446V 对应 -20~60dB
+ * 实测拟合(5点): G = 75.97×Vg - 49.30 (dB)
+ * 有效范围: Vg=0.7~1.1V 对应 3~33dB
  */
 #define AD603_VG_MIN      0.0f
 #define AD603_VG_MAX      1.446f
-#define AD603_GAIN_SLOPE  76.4812f   /* 店家标定 */
-#define AD603_GAIN_OFFSET -50.592f   /* 店家标定 */
+#define AD603_GAIN_SLOPE  75.97f    /* 实测拟合 */
+#define AD603_GAIN_OFFSET -49.30f   /* 实测拟合 */
 
 /* 内部DAC: STM32F407 DAC1 CH1 → AD603 VG引脚
  * DAC 满幅输出参考电压 (V)

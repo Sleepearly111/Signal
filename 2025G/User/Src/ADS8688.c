@@ -76,19 +76,19 @@ ADS8688_Status_t ads8688_set(void)
         goto done;
     }
 
-    Set_CH_Range_Select(ADS8688_RANGE_CH0_REG, ADS8688_RANGE_PM_10V24);
+    Set_CH_Range_Select(ADS8688_RANGE_CH0_REG, ADS8688_RANGE_PM_5V12);
     Delay(0x100U);
     status = ADS8688_CheckRegister(ADS8688_RANGE_CH0_REG,
-                                   ADS8688_RANGE_PM_10V24,
+                                   ADS8688_RANGE_PM_5V12,
                                    ADS8688_ERR_RANGE_CH0);
     if (status != ADS8688_OK) {
         goto done;
     }
 
-    Set_CH_Range_Select(ADS8688_RANGE_CH1_REG, ADS8688_RANGE_PM_10V24);
+    Set_CH_Range_Select(ADS8688_RANGE_CH1_REG, ADS8688_RANGE_PM_5V12);
     Delay(0x100U);
     status = ADS8688_CheckRegister(ADS8688_RANGE_CH1_REG,
-                                   ADS8688_RANGE_PM_10V24,
+                                   ADS8688_RANGE_PM_5V12,
                                    ADS8688_ERR_RANGE_CH1);
     if (status != ADS8688_OK) {
         goto done;
@@ -250,6 +250,9 @@ uint8_t ADS8688A_INIT(void)
     return i;
 }
 
+/* SPI 时序延迟: ~5 NOP ≈ 30ns@168MHz，SCLK ≈ 12.5MHz < ADS8688 上限 17MHz */
+#define SPI_DELAY() do { __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); } while(0)
+
 uint8_t ADS8688A_SPI_RB(void)
 {
     uint8_t rdata = 0U;
@@ -258,10 +261,12 @@ uint8_t ADS8688A_SPI_RB(void)
     for (s = 0U; s < 8U; s++) {
         rdata <<= 1U;
         SCLK_H;
+        SPI_DELAY();
         if (SDO == GPIO_PIN_SET) {
             rdata |= 0x01U;
         }
         SCLK_L;
+        SPI_DELAY();
     }
 
     return rdata;
@@ -280,8 +285,10 @@ void ADS8688A_SPI_WB(uint8_t com)
             SDI_L;
         }
         SCLK_H;
+        SPI_DELAY();
         com_temp <<= 1U;
         SCLK_L;
+        SPI_DELAY();
     }
 }
 

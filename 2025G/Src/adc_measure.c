@@ -2,6 +2,7 @@
 #include "app_config.h"
 #include "arm_math.h"
 #include "math.h"
+#include <stdio.h>
 
 /* 复用 ADS8688 驱动 */
 #include "ADS8688.h"
@@ -61,6 +62,16 @@ void ADC_Measure_Service(void)
         measure_active = 0;
         measure_done   = 1;
 
+        /* 找 min/max (mV) */
+        float min_mv = sample_buf[0], max_mv = sample_buf[0];
+        for (uint32_t i = 1; i < MEASURE_SAMPLES; i++) {
+            if (sample_buf[i] < min_mv) min_mv = sample_buf[i];
+            if (sample_buf[i] > max_mv) max_mv = sample_buf[i];
+        }
+
+        /* 直接 Vpp = max - min */
+        float vpp_direct_mv = max_mv - min_mv;
+
         /* 计算直流偏置 */
         float dc;
         arm_mean_f32(sample_buf, MEASURE_SAMPLES, &dc);
@@ -78,6 +89,9 @@ void ADC_Measure_Service(void)
         last_result.rms_v = rms_mv / 1000.0f;
         last_result.vpp   = last_result.rms_v * 2.828427f;  /* RMS × 2√2 */
         last_result.dc_v  = dc / 1000.0f;
+
+        printf("[ADC] min=%.0fmV max=%.0fmV vpp_direct=%.0fmV rms=%.0fmV vpp_rms=%.0fmV dc=%.0fmV\r\n",
+               min_mv, max_mv, vpp_direct_mv, rms_mv, last_result.vpp * 1000.0f, dc);
     }
 }
 

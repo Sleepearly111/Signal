@@ -122,26 +122,37 @@ static float CalibrateToVpp(uint32_t freq_hz, float target_vpp)
         HAL_Delay(50);  /* 等输出稳定 */
 
         ADC_Measure_Start(0);  /* ADS8688 CH0 */
+        extern volatile uint8_t ads8688_sample_request;
         while (!ADC_Measure_IsDone()) {
+            ads8688_sample_request = 1;
             ADS8688_Service();
+            ADC_Measure_Service();
         }
 
         ADC_MeasureResult res = ADC_Measure_GetResult();
         measured_vpp = res.vpp;
 
-        printf("[CAL] freq=%luHz gain=%.2f vpp=%.3fV\r\n",
-               freq_hz, current_gain_linear, measured_vpp);
+        printf("[CAL] freq=%luHz gain=%.2f vpp=%.3fV err=%.1f%%\r\n",
+               freq_hz, current_gain_linear, measured_vpp,
+               100.0f * (measured_vpp - target_vpp) / target_vpp);
 
-        if (measured_vpp >= target_vpp) {
-            break;  /* 达标 */
+        /* 误差 < 5% → 达标 */
+        float err = (measured_vpp - target_vpp) / target_vpp;
+        if (fabsf(err) < 0.05f) {
+            break;
         }
 
-        float needed = target_vpp / (measured_vpp + 0.001f);
-        current_gain_linear *= needed;
+        /* 比例修正，限制 0.5~2.0 倍避免振荡 */
+        float ratio = target_vpp / (measured_vpp + 0.001f);
+        if (ratio > 2.0f) ratio = 2.0f;
+        if (ratio < 0.5f) ratio = 0.5f;
+        current_gain_linear *= ratio;
 
         if (current_gain_linear > 100.0f) {
-            current_gain_linear = 100.0f;  /* AD603 最大约 42dB ≈ 126倍 */
-            break;
+            current_gain_linear = 100.0f;
+        }
+        if (current_gain_linear < 0.001f) {
+            current_gain_linear = 0.001f;
         }
     }
 
@@ -163,8 +174,11 @@ static float SetDeviceOutputVpp(uint32_t freq_hz, float target_vpp)
         HAL_Delay(50);
 
         ADC_Measure_Start(0);  /* CH0 = 装置自身输出 */
+        extern volatile uint8_t ads8688_sample_request;
         while (!ADC_Measure_IsDone()) {
+            ads8688_sample_request = 1;
             ADS8688_Service();
+            ADC_Measure_Service();
         }
         measured = ADC_Measure_GetResult().vpp;
 
@@ -320,22 +334,42 @@ int main(void)
 
   /* DAC CH1 显式配置（CubexMX 只配了 CH2） */
   {
+      /* PA4 配置为模拟模式 */
+      __HAL_RCC_GPIOA_CLK_ENABLE();
+      GPIO_InitTypeDef pa4_cfg = {0};
+      pa4_cfg.Pin = GPIO_PIN_4;
+      pa4_cfg.Mode = GPIO_MODE_ANALOG;
+      pa4_cfg.Pull = GPIO_NOPULL;
+      HAL_GPIO_Init(GPIOA, &pa4_cfg);
+
       DAC_ChannelConfTypeDef ch1_cfg = {0};
       ch1_cfg.DAC_Trigger = DAC_TRIGGER_NONE;
       ch1_cfg.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
       HAL_DAC_ConfigChannel(&hdac, &ch1_cfg, DAC_CHANNEL_1);
   }
 
-  /* ===== TODO: 标定④ — Vg=1V固定输出，测完删 ===== */
+  /* ===== TODO: MANUAL模式 100kHz 测试 — 测完删 ===== */
   {
-      uint32_t dac_val = (uint32_t)(0.9f * 4095.0f / 3.3f);
-      HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
-      HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
-      DDS_SetFrequency(1000);
-      printf("[CAL4] Vg=0.9V (DAC=%lu/4095) 输入Vpp=? 输出Vpp=?\r\n", dac_val);
+      DDS_SetFrequency(100000);
+      VGA_SetGain_Linear(1.0f);
+      HAL_Delay(50);
+
+      MAN_Ch_n_Mode(MAN_Ch_0);  /* 手动选择 CH0 */
+      HAL_Delay(10);
+
+      float min_mv = 9999.0f, max_mv = -9999.0f;
+      for (int i = 0; i < 256; i++) {
+          uint16_t code = Get_MAN_Ch_n_Mode_Data();
+          float mv = ADS8688_CodeToMilliVolt(code);
+          if (mv < min_mv) min_mv = mv;
+          if (mv > max_mv) max_mv = mv;
+          for (volatile int d = 0; d < 100; d++);  /* ~2.5us delay */
+      }
+      printf("=== MANUAL模式 CH0 100kHz gain=1.0 ===\r\n");
+      printf("  min=%.0fmV max=%.0fmV vpp=%.0fmV\r\n", min_mv, max_mv, max_mv - min_mv);
       while (1);
   }
-  /* ===== 标定④ end ===== */
+  /* ===== 基本(2)测试 end ===== */
 
   HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);  /* 就绪指示 */
   /* USER CODE END 2 */
@@ -344,6 +378,8 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    extern volatile uint8_t ads8688_sample_request;
+    ads8688_sample_request = 1;
     ADS8688_Service();       /* 维持 ADC 数据就绪 */
     ADC_Measure_Service();   /* 采集中则收集数据点 */
     AdvLearn_Service();      /* 发挥(1)学习状态机推进(IDLE时快速返回) */
