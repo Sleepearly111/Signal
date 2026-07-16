@@ -15,8 +15,7 @@ static uint8_t ads8688_busy = 0U;
 #define ADS8688_RANGE_CH1_REG     0x06U
 #define ADS8688_AUTO_SEQ_CH0_CH1  0x03U
 #define ADS8688_POWER_DOWN_CH2_7  0xFCU
-#define ADS8688_RANGE_PM_5V12     0x01U
-#define ADS8688_RANGE_PM_10V24     0x00U
+#define ADS8688_RANGE_PM_5V12     0x71U  /* bits[3:0]=1 ±5.12V, bits[6:4]=111 LPF旁路 */
 
 static void Enter_RESET_MODE(void)
 {
@@ -78,19 +77,17 @@ ADS8688_Status_t ads8688_set(void)
 
     Set_CH_Range_Select(ADS8688_RANGE_CH0_REG, ADS8688_RANGE_PM_5V12);
     Delay(0x100U);
-    status = ADS8688_CheckRegister(ADS8688_RANGE_CH0_REG,
-                                   ADS8688_RANGE_PM_5V12,
-                                   ADS8688_ERR_RANGE_CH0);
-    if (status != ADS8688_OK) {
+    if ((ADS8688A_READ_Program_Register(ADS8688_RANGE_CH0_REG) & 0x0FU)
+        != (ADS8688_RANGE_PM_5V12 & 0x0FU)) {
+        status = ADS8688_ERR_RANGE_CH0;
         goto done;
     }
 
     Set_CH_Range_Select(ADS8688_RANGE_CH1_REG, ADS8688_RANGE_PM_5V12);
     Delay(0x100U);
-    status = ADS8688_CheckRegister(ADS8688_RANGE_CH1_REG,
-                                   ADS8688_RANGE_PM_5V12,
-                                   ADS8688_ERR_RANGE_CH1);
-    if (status != ADS8688_OK) {
+    if ((ADS8688A_READ_Program_Register(ADS8688_RANGE_CH1_REG) & 0x0FU)
+        != (ADS8688_RANGE_PM_5V12 & 0x0FU)) {
+        status = ADS8688_ERR_RANGE_CH1;
         goto done;
     }
 

@@ -7,13 +7,23 @@
 
 /* ===== 全局状态 ===== */
 volatile AppMode  g_mode         = MODE_IDLE;
-volatile uint32_t g_set_freq_hz  = 1000;
-volatile float    g_set_vpp      = 2.0f;
+volatile uint32_t g_set_freq_hz  = 2000;
+volatile float    g_set_vpp      = 1.8f;
 
-/* 串口屏接收缓冲 (复用 USART1 RXNE 中断) */
-#define UI_RX_BUF_SIZE 32
+/* 串口屏接收缓冲。
+ * 新屏幕协议使用 ASCII：SET,<频率Hz>,<峰峰值mV>\n
+ * 例：SET,1000,1500\n → 基本(4)，1kHz、1.5Vpp。
+ * 同时保留旧版二进制帧：命令 + 参数 + FF FF FF。 */
+#define UI_RX_BUF_SIZE 48
 static uint8_t  rx_buf[UI_RX_BUF_SIZE];
-static uint16_t rx_sta;
+static uint16_t rx_len;
+static uint8_t  rx_ff_count;
+
+/* 中断仅接收和入队；命令在主循环执行，避免中断里阻塞发送串口。 */
+static uint8_t          cmd_buf[UI_RX_BUF_SIZE];
+static uint16_t         cmd_len;
+static volatile uint8_t cmd_ready;
+static uint8_t          uart1_rx_byte;
 
 /* USART 句柄 */
 extern UART_HandleTypeDef huart1;
@@ -49,41 +59,144 @@ void UI_SendToScreen(const char *fmt, ...)
 
 void UI_Init(void)
 {
-    rx_sta = 0;
+    rx_len = 0;
+    rx_ff_count = 0;
+    cmd_len = 0;
+    cmd_ready = 0;
     memset(rx_buf, 0, UI_RX_BUF_SIZE);
 
-    /* 使能 USART1 RXNE 中断 */
-    __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
+    /* 用 HAL 的中断接收接口注册接收字节；仅打开 RXNE 不会产生完成回调。 */
+    HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
 
     /* 启动画面 */
+    UI_SendToScreen("bkcmd=0");  /* 屏幕不回传每条指令的成功应答，避免干扰控制命令 */
     UI_SendToScreen("page 0");
     UI_SendToScreen("message.txt=\"2025G 电路模型探究\"");
 }
 
 /*
- * 串口屏命令解析
- * 帧格式: 命令字节 + 参数 + 0xFF 0xFF 0xFF 帧尾
+ * 串口屏命令解析。
+ * 推荐屏幕使用 ASCII 帧：
+ *   SET,<频率Hz>,<峰峰值mV>\n  例如 SET,1000,1500\n
+ *   B3\n / B2,<频率Hz>\n / LEARN\n / REPLAY\n / STOP\n
+ * 精简控件方案可直接发送 Number.val 的四字节值（小端）：
+ *   A2 + <freq 4B> + FF FF FF              → 基本(2)
+ *   A3 + FF FF FF                          → 基本(3)
+ *   A4 + <freq 4B> + <vpp_mV 4B> + FF...  → 基本(4)
+ * 屏幕事件用 print nX.val 即可，不需要隐藏文本/数据变量。
+ *
+ * 仍兼容旧版二进制帧：命令字节 + 参数 + 0xFF 0xFF 0xFF 帧尾
  *
  * 0x01 0x00 → 基本(3): 1kHz 固定 2Vpp
  * 0x02 xx yy → 基本(4): xx=频率高字节 yy=频率低字节 (freq = (xx<<8|yy)*100Hz)
  * 0x03 xx → 设置目标电压 Vpp (xx = Vpp×10, 如 20=2.0V)
  */
+static uint32_t UI_ReadU32LE(const uint8_t *p)
+{
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
 void UI_ProcessCommand(uint8_t *buf, uint16_t len)
 {
-    if (len < 2) return;
+    if (len == 0) return;
+
+    /* 精简屏幕方案：直接接收 Number.val 的四字节小端整数。 */
+    if (buf[0] == 0xA2 && len == 5) {
+        uint32_t freq_hz = UI_ReadU32LE(&buf[1]);
+        if (freq_hz < FREQ_MIN_HZ) freq_hz = FREQ_MIN_HZ;
+        if (freq_hz > FREQ_MAX_HZ) freq_hz = FREQ_MAX_HZ;
+        g_set_freq_hz = (freq_hz / FREQ_STEP_HZ) * FREQ_STEP_HZ;
+        g_mode = MODE_CALIBRATE;
+        UI_SendToScreen("message.txt=\"基本(2): %luHz\"", g_set_freq_hz);
+        return;
+    }
+
+    if (buf[0] == 0xA3 && len == 1) {
+        g_mode = MODE_BASIC3;
+        UI_SendToScreen("message.txt=\"基本(3): 1kHz→2Vpp\"");
+        return;
+    }
+
+    if (buf[0] == 0xA4 && len == 9) {
+        uint32_t freq_hz = UI_ReadU32LE(&buf[1]);
+        uint32_t vpp_mv  = UI_ReadU32LE(&buf[5]);
+        if (freq_hz < FREQ_MIN_HZ) freq_hz = FREQ_MIN_HZ;
+        if (freq_hz > FREQ_BASIC4_MAX) freq_hz = FREQ_BASIC4_MAX;
+        if (vpp_mv < 1000UL) vpp_mv = 1000UL;
+        if (vpp_mv > 2000UL) vpp_mv = 2000UL;
+
+        g_set_freq_hz = (freq_hz / FREQ_STEP_HZ) * FREQ_STEP_HZ;
+        g_set_vpp = (float)((vpp_mv / 100UL) * 100UL) / 1000.0f;
+        g_mode = MODE_BASIC4;
+        UI_SendToScreen("message.txt=\"基本(4): %luHz / %.1fVpp\"",
+                        g_set_freq_hz, g_set_vpp);
+        return;
+    }
+
+    /* 推荐的可读 ASCII 协议。峰峰值以 mV 传递，避免屏端浮点格式问题。 */
+    if (buf[0] >= 'A' && buf[0] <= 'Z') {
+        char line[UI_RX_BUF_SIZE];
+        uint16_t line_len = (len < UI_RX_BUF_SIZE - 1) ? len : UI_RX_BUF_SIZE - 1;
+        memcpy(line, buf, line_len);
+        line[line_len] = '\0';
+
+        unsigned long freq_hz;
+        unsigned long vpp_mv;
+        if (sscanf(line, "SET,%lu,%lu", &freq_hz, &vpp_mv) == 2) {
+            if (freq_hz < FREQ_MIN_HZ) freq_hz = FREQ_MIN_HZ;
+            if (freq_hz > FREQ_BASIC4_MAX) freq_hz = FREQ_BASIC4_MAX;
+            if (vpp_mv < 1000UL) vpp_mv = 1000UL;
+            if (vpp_mv > 2000UL) vpp_mv = 2000UL;
+
+            /* 保持题目基本(4)的 100Hz / 0.1Vpp 设定步长。 */
+            freq_hz = (freq_hz / FREQ_STEP_HZ) * FREQ_STEP_HZ;
+            vpp_mv = (vpp_mv / 100UL) * 100UL;
+
+            g_set_freq_hz = (uint32_t)freq_hz;
+            g_set_vpp = (float)vpp_mv / 1000.0f;
+            g_mode = MODE_BASIC4;
+            UI_SendToScreen("message.txt=\"设定 %luHz / %.1fVpp\"",
+                            freq_hz, g_set_vpp);
+        } else if (sscanf(line, "B2,%lu", &freq_hz) == 1) {
+            if (freq_hz < FREQ_MIN_HZ) freq_hz = FREQ_MIN_HZ;
+            if (freq_hz > FREQ_MAX_HZ) freq_hz = FREQ_MAX_HZ;
+            freq_hz = (freq_hz / FREQ_STEP_HZ) * FREQ_STEP_HZ;
+            g_set_freq_hz = (uint32_t)freq_hz;
+            g_mode = MODE_CALIBRATE;
+        } else if (strcmp(line, "B3") == 0) {
+            g_mode = MODE_BASIC3;
+            UI_SendToScreen("message.txt=\"基本(3): 1kHz→2Vpp\"");
+        } else if (strcmp(line, "LEARN") == 0) {
+            g_mode = MODE_LEARN;
+            UI_SendToScreen("message.txt=\"学习建模中...\"");
+        } else if (strcmp(line, "REPLAY") == 0) {
+            g_mode = MODE_REPLAY;
+            UI_SendToScreen("message.txt=\"复现输出中...\"");
+        } else if (strcmp(line, "STOP") == 0) {
+            g_mode = MODE_IDLE;
+            UI_SendToScreen("message.txt=\"已停止\"");
+        }
+        return;
+    }
 
     switch (buf[0]) {
     case 0x01:  /* 基本(3) */
+        if (len < 2) break;  /* 0x01 + FF FF FF 可能是屏幕的“成功应答” */
         g_mode = MODE_BASIC3;
         UI_SendToScreen("message.txt=\"基本(3): 1kHz→2Vpp\"");
         break;
 
     case 0x06:  /* 发挥(2): 启动复现 → 推理生成未知电路输出 */
+        if (len < 2) break;
         g_mode = MODE_REPLAY;
         UI_SendToScreen("message.txt=\"复现输出中...\"");
         break;
 
     case 0x05:  /* 发挥(1): 启动学习键 → 自主学习未知电路 */
+        if (len < 2) break;
         g_mode = MODE_LEARN;
         UI_SendToScreen("message.txt=\"学习建模中...\"");
         break;
@@ -125,6 +238,27 @@ void UI_ProcessCommand(uint8_t *buf, uint16_t len)
     }
 }
 
+void UI_Service(void)
+{
+    uint8_t local_buf[UI_RX_BUF_SIZE];
+    uint16_t local_len = 0;
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    if (cmd_ready) {
+        local_len = cmd_len;
+        memcpy(local_buf, cmd_buf, local_len);
+        cmd_ready = 0;
+    }
+    if (!primask) {
+        __enable_irq();
+    }
+
+    if (local_len > 0) {
+        UI_ProcessCommand(local_buf, local_len);
+    }
+}
+
 void UI_UpdateDisplay(uint32_t freq_hz, float vpp)
 {
     UI_SendToScreen("t0.txt=\"%.2fkHz\"", (float)freq_hz / 1000.0f);
@@ -153,30 +287,63 @@ void UI_KeyCallback(uint8_t key_id)
     }
 }
 
-/* ===== USART1 RXNE 中断回调 (逐字节接收串口屏数据) ===== */
+static void UI_ResetRxBuffer(void)
+{
+    rx_len = 0;
+    rx_ff_count = 0;
+}
+
+static void UI_QueueReceivedCommand(void)
+{
+    if (rx_len > 0 && !cmd_ready) {
+        memcpy(cmd_buf, rx_buf, rx_len);
+        cmd_len = rx_len;
+        cmd_ready = 1;
+    }
+    UI_ResetRxBuffer();
+}
+
+void UI_UART_RxCompleteCallback(void)
+{
+    UI_UART_RxCallback(uart1_rx_byte);
+    HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
+}
+
+/* ===== USART1 中断回调：接收一字节并在完整帧时入队 ===== */
 void UI_UART_RxCallback(uint8_t byte)
 {
-    /* 帧尾检测: 连续 3 个 0xFF */
-    if (byte == 0xFF) {
-        rx_sta++;
-        if (rx_sta >= 3) {
-            /* 帧接收完成，解析 */
-            uint16_t data_len = (rx_sta > 3) ? (rx_sta - 3) : 0;
-            if (data_len > 0 && data_len <= UI_RX_BUF_SIZE) {
-                UI_ProcessCommand(rx_buf, data_len);
-            }
-            rx_sta = 0;
-            memset(rx_buf, 0, UI_RX_BUF_SIZE);
+    /* ASCII 命令以换行结束。 */
+    if (byte == '\n') {
+        if (rx_ff_count == 0) {
+            UI_QueueReceivedCommand();
+        } else {
+            UI_ResetRxBuffer();
         }
         return;
     }
 
-    /* 非 0xFF 字节: 如果之前收到了 0xFF，先存入缓冲 */
-    if (rx_sta > 0) {
-        rx_buf[rx_sta - 1] = byte;
-        rx_sta++;
-        if (rx_sta - 1 >= UI_RX_BUF_SIZE) {
-            rx_sta = 0;  /* 溢出，丢弃 */
+    /* 保留对旧版二进制帧尾 FF FF FF 的兼容。 */
+    if (byte == 0xFF) {
+        rx_ff_count++;
+        if (rx_ff_count >= 3) {
+            UI_QueueReceivedCommand();
         }
+        return;
     }
+
+    /* 0xFF 若不构成帧尾，则按普通数据保留。 */
+    while (rx_ff_count > 0) {
+        if (rx_len >= UI_RX_BUF_SIZE - 1) {
+            UI_ResetRxBuffer();
+            return;
+        }
+        rx_buf[rx_len++] = 0xFF;
+        rx_ff_count--;
+    }
+
+    if (rx_len >= UI_RX_BUF_SIZE - 1) {
+        UI_ResetRxBuffer();
+        return;
+    }
+    rx_buf[rx_len++] = byte;
 }

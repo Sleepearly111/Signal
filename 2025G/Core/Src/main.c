@@ -74,10 +74,7 @@ void SystemClock_Config(void);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART1) {
-        uint8_t byte;
-        HAL_UART_Receive(huart, &byte, 1, 0);
-        UI_UART_RxCallback(byte);
-        __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
+        UI_UART_RxCompleteCallback();
     }
 }
 
@@ -136,16 +133,16 @@ static float CalibrateToVpp(uint32_t freq_hz, float target_vpp)
                freq_hz, current_gain_linear, measured_vpp,
                100.0f * (measured_vpp - target_vpp) / target_vpp);
 
-        /* 误差 < 5% → 达标 */
+        /* 误差 < 2% → 达标 */
         float err = (measured_vpp - target_vpp) / target_vpp;
-        if (fabsf(err) < 0.05f) {
+        if (fabsf(err) < 0.02f) {
             break;
         }
 
-        /* 比例修正，限制 0.5~2.0 倍避免振荡 */
+        /* 阻尼修正，限制 0.7~1.3 倍避免振荡 */
         float ratio = target_vpp / (measured_vpp + 0.001f);
-        if (ratio > 2.0f) ratio = 2.0f;
-        if (ratio < 0.5f) ratio = 0.5f;
+        if (ratio > 1.3f) ratio = 1.3f;
+        if (ratio < 0.7f) ratio = 0.7f;
         current_gain_linear *= ratio;
 
         if (current_gain_linear > 100.0f) {
@@ -348,29 +345,7 @@ int main(void)
       HAL_DAC_ConfigChannel(&hdac, &ch1_cfg, DAC_CHANNEL_1);
   }
 
-  /* ===== TODO: MANUAL模式 100kHz 测试 — 测完删 ===== */
-  {
-      DDS_SetFrequency(100000);
-      VGA_SetGain_Linear(1.0f);
-      HAL_Delay(50);
-
-      MAN_Ch_n_Mode(MAN_Ch_0);  /* 手动选择 CH0 */
-      HAL_Delay(10);
-
-      float min_mv = 9999.0f, max_mv = -9999.0f;
-      for (int i = 0; i < 256; i++) {
-          uint16_t code = Get_MAN_Ch_n_Mode_Data();
-          float mv = ADS8688_CodeToMilliVolt(code);
-          if (mv < min_mv) min_mv = mv;
-          if (mv > max_mv) max_mv = mv;
-          for (volatile int d = 0; d < 100; d++);  /* ~2.5us delay */
-      }
-      printf("=== MANUAL模式 CH0 100kHz gain=1.0 ===\r\n");
-      printf("  min=%.0fmV max=%.0fmV vpp=%.0fmV\r\n", min_mv, max_mv, max_mv - min_mv);
-      while (1);
-  }
-  /* ===== 基本(2)测试 end ===== */
-
+  printf("=== 就绪: 串口屏控制 ===\r\n");
   HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);  /* 就绪指示 */
   /* USER CODE END 2 */
 
@@ -382,6 +357,7 @@ int main(void)
     ads8688_sample_request = 1;
     ADS8688_Service();       /* 维持 ADC 数据就绪 */
     ADC_Measure_Service();   /* 采集中则收集数据点 */
+    UI_Service();            /* 串口屏命令处理 */
     AdvLearn_Service();      /* 发挥(1)学习状态机推进(IDLE时快速返回) */
     AdvReplay_Service();     /* 发挥(2)复现状态机推进(非激活时快速返回) */
 
