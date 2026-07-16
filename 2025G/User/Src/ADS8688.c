@@ -1,4 +1,5 @@
 #include "ADS8688.h"
+#include "spi.h"
 
 uint8_t test;
 
@@ -13,8 +14,9 @@ static uint8_t ads8688_busy = 0U;
 #define ADS8688_POWER_DOWN_REG    0x02U
 #define ADS8688_RANGE_CH0_REG     0x05U
 #define ADS8688_RANGE_CH1_REG     0x06U
-#define ADS8688_AUTO_SEQ_CH0_CH1  0x03U
-#define ADS8688_POWER_DOWN_CH2_7  0xFCU
+#define ADS8688_RANGE_CH3_REG     0x08U
+#define ADS8688_AUTO_SEQ_CH0_CH1  0x03U  /* CH0(丝印CH1) + CH1(丝印CH2) */
+#define ADS8688_POWER_DOWN_CH2_7  0xFCU  /* CH0/CH1 使能, CH2~7 断电 */
 #define ADS8688_RANGE_PM_5V12     0x71U  /* bits[3:0]=1 ±5.12V, bits[6:4]=111 LPF旁路 */
 
 static void Enter_RESET_MODE(void)
@@ -161,22 +163,17 @@ void AUTO_RST_Mode(void)
 
 void Get_AUTO_RST_Mode_Data(uint16_t* outputdata, uint8_t chnum)
 {
-    if (outputdata == 0) {
-        return;
-    }
+    if (outputdata == 0) return;
+
+    uint8_t tx[4] = {0x00, 0x00, 0x00, 0x00};  /* NOP cmd + dummy for read */
+    uint8_t rx[4];
 
     for (uint8_t i = 0U; i < chnum; i++) {
-        uint8_t datah;
-        uint8_t datal;
-
         nCS_L;
-        ADS8688A_SPI_WB(0x00U);
-        ADS8688A_SPI_WB(0x00U);
-        datah = ADS8688A_SPI_RB();
-        datal = ADS8688A_SPI_RB();
+        HAL_SPI_TransmitReceive(&hspi3, tx, rx, 4, 10);
         nCS_H;
-
-        outputdata[i] = (uint16_t)(((uint16_t)datah << 8) | datal);
+        /* rx[0..1]=dummy(命令回声), rx[2..3]=16bit ADC数据 */
+        outputdata[i] = (uint16_t)(((uint16_t)rx[2] << 8) | rx[3]);
     }
 }
 
@@ -202,9 +199,9 @@ void MAN_Ch_n_Mode(uint16_t ch)
 
 void ADS8688A_Write_Program_Register(uint8_t Addr, uint8_t data)
 {
+    uint8_t tx[2] = {(uint8_t)((Addr << 1U) | 0x01U), data};
     nCS_L;
-    ADS8688A_SPI_WB((uint8_t)((Addr << 1U) | 0x01U));
-    ADS8688A_SPI_WB(data);
+    HAL_SPI_Transmit(&hspi3, tx, 2, 10);
     nCS_H;
 }
 
@@ -215,22 +212,19 @@ void Set_CH_Range_Select(uint8_t ch, uint8_t range)
 
 uint8_t ADS8688A_READ_Program_Register(uint8_t Addr)
 {
-    uint8_t data;
-
+    uint8_t tx[3] = {(uint8_t)(Addr << 1U), 0x00, 0x00};
+    uint8_t rx[3];
     nCS_L;
-    ADS8688A_SPI_WB((uint8_t)(Addr << 1U));
-    (void)ADS8688A_SPI_RB();
-    data = ADS8688A_SPI_RB();
+    HAL_SPI_TransmitReceive(&hspi3, tx, rx, 3, 10);
     nCS_H;
-
-    return data;
+    return rx[2];  /* 第3字节是寄存器值 */
 }
 
 void ADS8688A_WriteCommandReg(uint16_t command)
 {
+    uint8_t tx[2] = {(uint8_t)((command >> 8) & 0xFFU), (uint8_t)(command & 0xFFU)};
     nCS_L;
-    ADS8688A_SPI_WB((uint8_t)((command >> 8) & 0xFFU));
-    ADS8688A_SPI_WB((uint8_t)(command & 0xFFU));
+    HAL_SPI_Transmit(&hspi3, tx, 2, 10);
     nCS_H;
 }
 
@@ -241,52 +235,28 @@ uint8_t ADS8688A_INIT(void)
     Delay(0x1FFFU);
 
     Enter_RESET_MODE();
+    Delay(0xFFFU);  /* 等芯片复位完成 */
     ADS8688A_Write_Program_Register(ADS8688_AUTO_SEQ_REG, 0xFFU);
+    Delay(0xFFU);   /* 等寄存器写入生效 */
     i = ADS8688A_READ_Program_Register(ADS8688_AUTO_SEQ_REG);
 
     return i;
 }
 
-/* SPI 时序延迟: ~5 NOP ≈ 30ns@168MHz，SCLK ≈ 12.5MHz < ADS8688 上限 17MHz */
-#define SPI_DELAY() do { __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); } while(0)
+/* ===== 硬件 SPI3 (PC10=SCK, PC11=MISO, PC12=MOSI) @10.5MHz ===== */
+extern SPI_HandleTypeDef hspi3;
 
 uint8_t ADS8688A_SPI_RB(void)
 {
-    uint8_t rdata = 0U;
-    uint8_t s;
-
-    for (s = 0U; s < 8U; s++) {
-        rdata <<= 1U;
-        SCLK_H;
-        SPI_DELAY();
-        if (SDO == GPIO_PIN_SET) {
-            rdata |= 0x01U;
-        }
-        SCLK_L;
-        SPI_DELAY();
-    }
-
+    uint8_t rdata;
+    HAL_SPI_Receive(&hspi3, &rdata, 1, 10);
     return rdata;
 }
 
+/* 写一字节(不管理CS, 由上层控制) */
 void ADS8688A_SPI_WB(uint8_t com)
 {
-    uint8_t com_temp = com;
-    uint8_t s;
-
-    nCS_L;
-    for (s = 0U; s < 8U; s++) {
-        if ((com_temp & 0x80U) != 0U) {
-            SDI_H;
-        } else {
-            SDI_L;
-        }
-        SCLK_H;
-        SPI_DELAY();
-        com_temp <<= 1U;
-        SCLK_L;
-        SPI_DELAY();
-    }
+    HAL_SPI_Transmit(&hspi3, &com, 1, 10);
 }
 
 void Delay(uint32_t nCount)

@@ -13,7 +13,8 @@ typedef enum {
     ADS8688_ERR_AUTO_SEQ,
     ADS8688_ERR_POWER_DOWN,
     ADS8688_ERR_RANGE_CH0,
-    ADS8688_ERR_RANGE_CH1
+    ADS8688_ERR_RANGE_CH1,
+    ADS8688_ERR_RANGE_CH3
 } ADS8688_Status_t;
 
 extern volatile uint8_t ads8688_sample_request;
@@ -39,6 +40,7 @@ void Set_CH_Range_Select(uint8_t ch, uint8_t range);//设置各个通道的范�
 void ADS8688A_Write_Program_Register(uint8_t Addr, uint8_t data);
 void AUTO_RST_Mode(void);
 void Get_AUTO_RST_Mode_Data(uint16_t* outputdata, uint8_t chnum);
+uint16_t ADS8688_ReadManualChannel(uint16_t man_ch_cmd);  /* 手动读指定通道 */
 
 // Command Register (datasheet P43, Table 6. Command Register Map)
 #define ADS8688_CMD_NO_OP      0x0000U

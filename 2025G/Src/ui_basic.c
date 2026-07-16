@@ -278,11 +278,21 @@ void UI_UpdateDisplay(uint32_t freq_hz, float vpp)
  * KEY0 (PE4) → 基本(3)
  * KEY1 (PE3) → 基本(4)
  */
+volatile uint8_t  dbg_active = 0;
+volatile uint32_t dbg_freq   = 0;
+volatile uint8_t  dbg_step   = 0;
+
 void UI_KeyCallback(uint8_t key_id)
 {
-    if (key_id == 0) {  /* KEY0 */
-        g_mode = MODE_BASIC3;
-    } else if (key_id == 1) {  /* KEY1 */
+    if (key_id == 0) {        /* KEY0 → 循环切频: 100,1k,3k,5k,60k */
+        const uint32_t f[] = {100, 1000, 3000, 5000, 60000};
+        dbg_step = (dbg_step + 1) % 5;
+        dbg_freq = f[dbg_step];
+        extern void DDS_SetFrequency(uint32_t);
+        DDS_SetFrequency(dbg_freq);
+        dbg_active = 1;
+        printf("=== 切到 %luHz ===\r\n", dbg_freq);
+    } else if (key_id == 1) { /* KEY1 → 基本(4) */
         g_mode = MODE_BASIC4;
     }
 }

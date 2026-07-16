@@ -14,6 +14,7 @@
 #include "adc.h"
 #include "dac.h"
 #include "dma.h"
+#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -83,23 +84,21 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     static uint32_t key_last_tick = 0;
 
-    /* 10ms 简单消抖（勿在中断里用 HAL_Delay） */
     uint32_t now = HAL_GetTick();
     if (now - key_last_tick < 10) {
         return;
     }
     key_last_tick = now;
 
-    /* 按键上拉输入、下降沿触发，读回低电平才确认真正按下 */
     if (GPIO_Pin == KEY0_Pin) {
         if (HAL_GPIO_ReadPin(KEY0_GPIO_Port, KEY0_Pin) == GPIO_PIN_RESET) {
             extern volatile uint8_t key;
-            key = 1;            /* 通知标定按键循环 */
-            UI_KeyCallback(0);  /* KEY0 → 基本(3) */
+            key = 1;
+            UI_KeyCallback(0);  /* KEY0 → 发挥(1) 学习 */
         }
     } else if (GPIO_Pin == KEY1_Pin) {
         if (HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_RESET) {
-            UI_KeyCallback(1);  /* KEY1 → 基本(4) */
+            UI_KeyCallback(1);
         }
     }
 }
@@ -306,6 +305,7 @@ int main(void)
   MX_TIM7_Init();
   MX_DAC_Init();
   MX_TIM6_Init();
+  MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
   setvbuf(stdout, NULL, _IONBF, 0);   /* printf 无缓冲，立即发送 */
 
@@ -345,8 +345,10 @@ int main(void)
       HAL_DAC_ConfigChannel(&hdac, &ch1_cfg, DAC_CHANNEL_1);
   }
 
-  printf("=== 就绪: 串口屏控制 ===\r\n");
-  HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);  /* 就绪指示 */
+    printf("=== KEY0=开始采样 ===\r\n");
+    DDS_SetFrequency(1000);
+    VGA_SetGain_Linear(0.5f);
+    HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -357,6 +359,30 @@ int main(void)
     ads8688_sample_request = 1;
     ADS8688_Service();       /* 维持 ADC 数据就绪 */
     ADC_Measure_Service();   /* 采集中则收集数据点 */
+
+    /* ---- 调试: 按键切频,采集256点算Vpp ---- */
+    {
+        extern volatile uint8_t  dbg_active;
+        extern volatile uint32_t dbg_freq;
+        if (dbg_active && ads8688_data_ready) {
+            static float b0[256], b1[256];
+            static uint16_t n = 0;
+            ads8688_data_ready = 0;
+            b0[n] = ADS8688_CodeToMilliVolt(v_suoxiang[0]);
+            b1[n] = ADS8688_CodeToMilliVolt(v_suoxiang[1]);
+            if (++n >= 256) {
+                float mn0=b0[0],mx0=b0[0],mn1=b1[0],mx1=b1[0];
+                for(int i=1;i<256;i++){
+                    if(b0[i]<mn0)mn0=b0[i]; if(b0[i]>mx0)mx0=b0[i];
+                    if(b1[i]<mn1)mn1=b1[i]; if(b1[i]>mx1)mx1=b1[i];
+                }
+                printf("[%luHz] CH1:%.0f~%.0f(%.0fmVpp) CH2:%.0f~%.0f(%.0fmVpp) R=%.2f\r\n",
+                       dbg_freq, mn0,mx0,mx0-mn0, mn1,mx1,mx1-mn1,
+                       (mx1-mn1)>5?(mx0-mn0)/(mx1-mn1):999.0f);
+                n = 0;
+            }
+        }
+    }
     UI_Service();            /* 串口屏命令处理 */
     AdvLearn_Service();      /* 发挥(1)学习状态机推进(IDLE时快速返回) */
     AdvReplay_Service();     /* 发挥(2)复现状态机推进(非激活时快速返回) */

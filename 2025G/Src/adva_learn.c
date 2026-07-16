@@ -20,11 +20,11 @@ extern void UI_SendToScreen(const char *fmt, ...);
 /* ADS8688 句柄(已在 ADS8688.h 声明) */
 
 /* ===== 学习阶段 ADC 通道(ADS8688) ===== */
-#define CH_LEARN_IN   1   /* 未知电路输入端 */
-#define CH_LEARN_OUT  2   /* 未知电路输出端 */
+#define CH_LEARN_IN   0   /* 未知电路输入端(装置输出) */
+#define CH_LEARN_OUT  1   /* 未知电路输出端 */
 
 /* FFT 测量用的采样点数(100Hz / 1MHz 各一次) */
-#define FFT_SAMPLE_COUNT  2048
+#define FFT_SAMPLE_COUNT  1024
 
 /* ===== 全局 FIR 系数表 ===== */
 float32_t g_fir_table[FIR_TABLE_ROWS][LMS_NUM_TAPS];
@@ -39,17 +39,14 @@ static float32_t s_lms_state[LMS_BLOCK_SIZE + LMS_NUM_TAPS - 1];
 static float32_t s_lms_coeffs[LMS_NUM_TAPS];
 
 /* 100Hz / 1MHz 两点幅值比 */
-static float s_amp_ratio[2];
+static float s_amp_ratio[2];  /* 100Hz, 30kHz */
 
-/* ===== 状态机 ===== */
+/* ===== 状态机(仅判断,暂不学习) ===== */
 typedef enum {
     ST_IDLE = 0,
-    ST_INIT_100HZ,      /* ① 100Hz FFT 测幅值 → 存 amp_ratio[0] */
-    ST_SWEEP_1,         /* ② 扫频 1k→60k@200Hz, LMS 每点学 FIR */
-    ST_SWEEP_1_DONE,    /* ③ 切换到第二段扫频参数 */
-    ST_SWEEP_2,         /* ④ 扫频 60k→1M@10kHz, 仅步进(不存 FIR) */
-    ST_FINISH_1MHZ,     /* ⑤ 1MHz FFT 测幅值 → 存 amp_ratio[1] */
-    ST_JUDGE,           /* ⑥ 两点比值判滤波类型 → 串口屏显示 */
+    ST_MEASURE_LOW,     /* ① 100Hz Vpp 测比(低频参考) */
+    ST_MEASURE_HIGH,    /* ② 30kHz Vpp 测比(高频参考) */
+    ST_JUDGE,           /* ③ 两点比值判滤波类型 */
     ST_DONE
 } LearnState;
 
@@ -83,49 +80,74 @@ static uint8_t collect_sample(void)
     if (!ads8688_data_ready) return 0;
     ads8688_data_ready = 0;
 
-    s_buf_in [s_sample_count] = ADS8688_CodeToMilliVolt(v_suoxiang[CH_LEARN_IN]);
-    s_buf_out[s_sample_count] = ADS8688_CodeToMilliVolt(v_suoxiang[CH_LEARN_OUT]);
+    uint16_t raw0 = v_suoxiang[0];  /* CH0(丝印CH1) = 装置输出 */
+    uint16_t raw1 = v_suoxiang[1];  /* CH1(丝印CH2) = 电路输出 */
+    s_buf_in [s_sample_count] = ADS8688_CodeToMilliVolt(raw0);
+    s_buf_out[s_sample_count] = ADS8688_CodeToMilliVolt(raw1);
+
+    if (s_sample_count < 5) {
+        printf("[LEARN] sample[%lu] raw0=%u raw1=%u → in=%.0fmV out=%.0fmV\r\n",
+               s_sample_count, raw0, raw1,
+               s_buf_in[s_sample_count], s_buf_out[s_sample_count]);
+    }
     s_sample_count++;
 
     return (s_sample_count >= s_sample_target) ? 1 : 0;
 }
 
-/* FFT 测幅值: 用已采集的 s_buf_in/out 前 FFT_SAMPLE_COUNT 点,存结果到 s_amp_ratio[idx] */
-static void fft_measure_amp_ratio(uint32_t idx)
+/* 切换自动扫描到单通道, 用于高频测量避免交替欠采样 */
+static void set_auto_seq_single_ch(uint8_t ch)
 {
-    /* 复用 s_lms_work 做 FFT mag 输出 */
-    float32_t *mag_in  = s_lms_work;                  /* 输入通道幅度谱 */
-    float32_t *mag_out = s_lms_work + DSP_FFT_SIZE/2 + 1; /* 输出通道幅度谱(复用后段) */
+    ADS8688_BeginAccess();
+    ADS8688A_Write_Program_Register(0x01U, (uint8_t)(1U << ch));  /* 只开 ch */
+    AUTO_RST_Mode();
+    ADS8688_EndAccess();
+}
 
-    /* 复制 + 加窗 + FFT: 电路输入侧 */
-    for (uint32_t i = 0; i < DSP_FFT_SIZE; i++) {
-        s_lms_work[DSP_FFT_SIZE + (DSP_FFT_SIZE/2+1) + i] = s_buf_in[i]; /* 暂存 */
+/* 恢复 CH0+CH1 双通道自动扫描 */
+static void set_auto_seq_dual(void)
+{
+    ADS8688_BeginAccess();
+    ADS8688A_Write_Program_Register(0x01U, 0x03U);  /* CH0+CH1 */
+    AUTO_RST_Mode();
+    ADS8688_EndAccess();
+}
+
+/* 单通道采集: 只读 v_suoxiang[0], 存到 dst */
+static uint8_t collect_single_ch(float32_t *dst)
+{
+    if (!ads8688_data_ready) return 0;
+    ads8688_data_ready = 0;
+    dst[s_sample_count] = ADS8688_CodeToMilliVolt(v_suoxiang[0]);
+    s_sample_count++;
+    return (s_sample_count >= s_sample_target) ? 1 : 0;
+}
+
+/* Vpp 法测幅值比: 直接算峰峰值(不依赖 FFT), 存到 s_amp_ratio[idx] */
+static void vpp_measure_ratio(uint32_t idx, uint32_t count)
+{
+    float min_in  = s_buf_in[0],  max_in  = s_buf_in[0];
+    float min_out = s_buf_out[0], max_out = s_buf_out[0];
+
+    for (uint32_t i = 1; i < count; i++) {
+        if (s_buf_in[i]  < min_in)  min_in  = s_buf_in[i];
+        if (s_buf_in[i]  > max_in)  max_in  = s_buf_in[i];
+        if (s_buf_out[i] < min_out) min_out = s_buf_out[i];
+        if (s_buf_out[i] > max_out) max_out = s_buf_out[i];
     }
-    /* 用 s_lms_work 后段暂存区,取前 DSP_FFT_SIZE 点 */
-    float32_t *tmp = s_lms_work + DSP_FFT_SIZE + (DSP_FFT_SIZE/2+1);
-    dsp_flat_top_window(tmp, DSP_FFT_SIZE);
-    dsp_fft_magnitude(tmp, mag_in, DSP_FFT_SIZE);
-    float amp_in;
-    float freq_in = dsp_find_peak_freq(mag_in, DSP_FFT_SIZE, DSP_SAMPLE_RATE, &amp_in, NULL);
 
-    /* 复制 + 加窗 + FFT: 电路输出侧 */
-    for (uint32_t i = 0; i < DSP_FFT_SIZE; i++) {
-        s_lms_work[DSP_FFT_SIZE + (DSP_FFT_SIZE/2+1) + i] = s_buf_out[i];
-    }
-    dsp_flat_top_window(tmp, DSP_FFT_SIZE);
-    dsp_fft_magnitude(tmp, mag_out, DSP_FFT_SIZE);
-    float amp_out;
-    dsp_find_peak_freq(mag_out, DSP_FFT_SIZE, DSP_SAMPLE_RATE, &amp_out, NULL);
+    float vpp_in  = max_in  - min_in;
+    float vpp_out = max_out - min_out;
 
-    /* 比值 = 输入/输出(>1=衰减) */
-    if (amp_out > 0.001f) {
-        s_amp_ratio[idx] = amp_in / amp_out;
+    if (vpp_out > 5.0f) {    /* 输出 >5mV 认为有效 */
+        s_amp_ratio[idx] = vpp_in / vpp_out;
     } else {
-        s_amp_ratio[idx] = 10.0f;  /* 极小视为严重衰减 */
+        s_amp_ratio[idx] = 200.0f;  /* 输出极小 → 强衰减(阻带) */
     }
 
-    printf("[LEARN] amp_ratio[%lu]=%f (in=%.3fV out=%.3fV f=%.0fHz)\r\n",
-           idx, s_amp_ratio[idx], amp_in, amp_out, freq_in);
+    printf("[LEARN] ratio[%lu]=%.3f (vpp_in=%.1fmV vpp_out=%.1fmV dc_in=%.0fmV dc_out=%.0fmV)\r\n",
+           idx, s_amp_ratio[idx], vpp_in, vpp_out,
+           (max_in+min_in)/2.0f, (max_out+min_out)/2.0f);
 }
 
 /* 当前频率做一次 LMS → 存 FIR */
@@ -186,14 +208,14 @@ void AdvLearn_Start(void)
     s_filter_type = 0;
     memset(s_amp_ratio, 0, sizeof(s_amp_ratio));
 
-    /* 设 100Hz → 电路输入, VGA 固定增益 */
+    /* 设 100Hz → 电路输入(低频通带参考) */
     AD9833_SetFrequencyQuick(100.0f, AD9833_OUT_SINUS);
-    VGA_SetGain_Linear(3.33f);
+    VGA_SetGain_Linear(0.5f);
     HAL_Delay(10);
 
-    s_state = ST_INIT_100HZ;
+    s_state = ST_MEASURE_LOW;
     start_sampling(FFT_SAMPLE_COUNT);
-    printf("[LEARN] Start: 100Hz FFT measurement\r\n");
+    printf("[LEARN] Start: 100Hz measurement\r\n");
 }
 
 void AdvLearn_Service(void)
@@ -204,104 +226,50 @@ void AdvLearn_Service(void)
     case ST_DONE:
         return;
 
-    /* ---- ① 100Hz FFT 测幅值 ---- */
-    case ST_INIT_100HZ:
+    /* ---- ① 100Hz Vpp 测幅比(低频通带) ---- */
+    case ST_MEASURE_LOW:
         if (!collect_sample()) return;
-        fft_measure_amp_ratio(0);           /* amp_ratio[0] */
+        vpp_measure_ratio(0, s_sample_target);
 
-        /* 切换到 1kHz, 开始正式 LMS 学习 */
-        s_sweep_freq = (uint32_t)SWEEP_FREQ_START;
-        s_sweep_step = SWEEP_STEP_1;
-        s_fir_index  = 0;
-        AD9833_SetFrequencyQuick((float)s_sweep_freq, AD9833_OUT_SINUS);
-        HAL_Delay(2);
-        s_state = ST_SWEEP_1;
-        start_sampling(LMS_BLOCK_SIZE);
-        printf("[LEARN] Sweep-1 start: %luHz step %luHz\r\n",
-               s_sweep_freq, (uint32_t)s_sweep_step);
+        /* → 30kHz 高频测量 */
+        AD9833_SetFrequencyQuick(30000.0f, AD9833_OUT_SINUS);
+        HAL_Delay(5);
+        s_state = ST_MEASURE_HIGH;
+        start_sampling(FFT_SAMPLE_COUNT);
         return;
 
-    /* ---- ② 扫频 1k→60k@200Hz ---- */
-    case ST_SWEEP_1:
+    /* ---- ② 30kHz Vpp 测幅比(高频阻带) ---- */
+    case ST_MEASURE_HIGH:
         if (!collect_sample()) return;
-
-        /* 当前频点 LMS 学习 → 存 FIR */
-        lms_learn_one_freq();
-
-        s_sweep_freq += s_sweep_step;
-        if (s_sweep_freq > (uint32_t)SWEEP_FREQ_1_END) {
-            s_state = ST_SWEEP_1_DONE;
-            printf("[LEARN] Sweep-1 complete (%lu FIR rows)\r\n", s_fir_index);
-            return;
-        }
-
-        AD9833_SetFrequencyQuick((float)s_sweep_freq, AD9833_OUT_SINUS);
-        start_sampling(LMS_BLOCK_SIZE);
-        return;
-
-    /* ---- ③ 切换第二段 ---- */
-    case ST_SWEEP_1_DONE:
-        s_sweep_freq = (uint32_t)SWEEP_FREQ_2_START;
-        s_sweep_step = SWEEP_STEP_2;
-        AD9833_SetFrequencyQuick((float)s_sweep_freq, AD9833_OUT_SINUS);
-        s_state = ST_SWEEP_2;
-        printf("[LEARN] Sweep-2 start: %luHz step %luHz (no FIR)\r\n",
-               s_sweep_freq, (uint32_t)s_sweep_step);
-        return;
-
-    /* ---- ④ 扫频 60k→1M@10kHz(仅步进) ---- */
-    case ST_SWEEP_2: {
-        /* 快速步进,不采样不 LMS */
-        s_sweep_freq += s_sweep_step;
-        if (s_sweep_freq > (uint32_t)SWEEP_FREQ_2_END) {
-            /* 到达 1MHz → FFT 测幅值 */
-            AD9833_SetFrequencyQuick(1000000.0f, AD9833_OUT_SINUS);
-            HAL_Delay(2);
-            s_state = ST_FINISH_1MHZ;
-            start_sampling(FFT_SAMPLE_COUNT);
-            printf("[LEARN] Sweep-2 done, 1MHz FFT\r\n");
-            return;
-        }
-        AD9833_SetFrequencyQuick((float)s_sweep_freq, AD9833_OUT_SINUS);
-        HAL_Delay(1);  /* 每步 1ms,94步≈94ms */
-        return;
-    }
-
-    /* ---- ⑤ 1MHz FFT 测幅值 ---- */
-    case ST_FINISH_1MHZ:
-        if (!collect_sample()) return;
-        fft_measure_amp_ratio(1);           /* amp_ratio[1] */
+        vpp_measure_ratio(1, s_sample_target);
         s_state = ST_JUDGE;
         return;
 
-    /* ---- ⑥ 判类型 ---- */
+    /* ---- ③ 判类型(两点法) ---- */
     case ST_JUDGE: {
-        float r0 = s_amp_ratio[0];   /* 100Hz */
-        float r1 = s_amp_ratio[1];   /* 1MHz */
+        float r_low  = s_amp_ratio[0];  /* 100Hz */
+        float r_high = s_amp_ratio[1];  /* 30kHz */
 
-        /* 比值≈1 ↔ 输出≈输入 ↔ 通带; 比值≫1 ↔ 衰减 ↔ 阻带 */
-        uint8_t pass_100 = (fabsf(r0 - 1.0f) < 0.3f) ? 1 : 0;
-        uint8_t pass_1M  = (fabsf(r1 - 1.0f) < 0.3f) ? 1 : 0;
+        printf("[JUDGE] ========== 判定详情 ==========\r\n");
+        printf("[JUDGE] 100Hz: ratio=%.2f → %s\r\n", r_low,  (r_low<2.0f)?"通":"阻");
+        printf("[JUDGE] 30kHz: ratio=%.2f → %s\r\n", r_high, (r_high<2.0f)?"通":"阻");
 
-        if      ( pass_100 && !pass_1M) s_filter_type = FILTER_LOW_PASS;
-        else if (!pass_100 &&  pass_1M) s_filter_type = FILTER_HIGH_PASS;
-        else if (!pass_100 && !pass_1M) s_filter_type = FILTER_BAND_PASS;
-        else if ( pass_100 &&  pass_1M) s_filter_type = FILTER_BAND_STOP;
-        else                             s_filter_type = 0;
+        uint8_t pass_low  = (r_low  < 2.0f) ? 1 : 0;
+        uint8_t pass_high = (r_high < 2.0f) ? 1 : 0;
+
+        if      ( pass_low && !pass_high) s_filter_type = FILTER_LOW_PASS;
+        else if (!pass_low &&  pass_high) s_filter_type = FILTER_HIGH_PASS;
+        else if (!pass_low && !pass_high) s_filter_type = FILTER_BAND_PASS;
+        else                               s_filter_type = FILTER_BAND_STOP;
 
         const char *names[] = {"???", "低通", "高通", "带通", "带阻"};
-        printf("[LEARN] Type=%s (r100=%.3f r1M=%.3f)\r\n",
-               names[s_filter_type], r0, r1);
+        printf("[JUDGE] 模式: low=%d high=%d\r\n", pass_low, pass_high);
+        printf("[JUDGE] === 结果: %s ===\r\n", names[s_filter_type]);
         UI_SendToScreen("rec.txt=\"%d\"", s_filter_type);
-        UI_SendToScreen("t.txt=\"学习完成\"");
-
-        /* 复位扫频参数, 避免下次调用残留 */
-        s_sweep_freq = (uint32_t)SWEEP_FREQ_START;
-        s_sweep_step = SWEEP_STEP_1;
+        UI_SendToScreen("t.txt=\"%s\"", names[s_filter_type]);
 
         s_done  = 1;
         s_state = ST_DONE;
-        printf("[LEARN] === 学习完成 ===\r\n");
         return;
     }
 

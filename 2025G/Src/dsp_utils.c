@@ -93,7 +93,7 @@ float dsp_find_peak_freq(const float32_t *mag, uint32_t fft_size,
                          float sample_rate, float *amp, uint32_t *index)
 {
     uint32_t nyq   = fft_size / 2;
-    uint32_t min_b = 4;            /* 跳过低频噪声(DC~约500Hz),从 bin 4 开始搜 */
+    uint32_t min_b = 1;            /* 从 bin 1 开始搜,跳过 DC */
     if (min_b >= nyq) min_b = 1;
 
     /* 找幅度最大的 bin */
