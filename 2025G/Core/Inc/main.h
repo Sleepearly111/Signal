@@ -87,6 +87,13 @@ void Error_Handler(void);
 #define ADS8688_CS_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
+/* ADS8688 位绑SPI引脚 (CubeMX未自动生成, 手动补充) */
+#define ADS8688_SCLK_Pin       GPIO_PIN_3
+#define ADS8688_SCLK_GPIO_Port GPIOD
+#define ADS8688_SDI_Pin        GPIO_PIN_4
+#define ADS8688_SDI_GPIO_Port  GPIOD
+#define ADS8688_SDO_Pin        GPIO_PIN_5
+#define ADS8688_SDO_GPIO_Port  GPIOD
 
 /* USER CODE END Private defines */
 

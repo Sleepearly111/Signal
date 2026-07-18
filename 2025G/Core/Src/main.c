@@ -14,7 +14,6 @@
 #include "adc.h"
 #include "dac.h"
 #include "dma.h"
-#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -107,7 +106,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 /* 对当前频率输出信号，测实际 Vpp；不足则逐次加 VGA 增益直到达标。返回实际 Vpp */
 static float CalibrateToVpp(uint32_t freq_hz, float target_vpp)
 {
-    float current_gain_linear = 1.0f;  /* 从 0dB 起步 */
+    float current_gain_linear = 1.0f;
     float measured_vpp = 0.0f;
     uint8_t max_attempts = 10;
 
@@ -115,9 +114,9 @@ static float CalibrateToVpp(uint32_t freq_hz, float target_vpp)
 
     for (uint8_t attempt = 0; attempt < max_attempts; attempt++) {
         VGA_SetGain_Linear(current_gain_linear);
-        HAL_Delay(50);  /* 等输出稳定 */
+        HAL_Delay(50);
 
-        ADC_Measure_Start(0);  /* ADS8688 CH0 */
+        ADC_Measure_Start(0);  /* v_suoxiang[0]=丝印CH1(THS4001) */
         extern volatile uint8_t ads8688_sample_request;
         while (!ADC_Measure_IsDone()) {
             ads8688_sample_request = 1;
@@ -132,34 +131,26 @@ static float CalibrateToVpp(uint32_t freq_hz, float target_vpp)
                freq_hz, current_gain_linear, measured_vpp,
                100.0f * (measured_vpp - target_vpp) / target_vpp);
 
-        /* 误差 < 2% → 达标 */
         float err = (measured_vpp - target_vpp) / target_vpp;
-        if (fabsf(err) < 0.02f) {
-            break;
-        }
+        if (fabsf(err) < 0.02f) break;
 
-        /* 阻尼修正，限制 0.7~1.3 倍避免振荡 */
         float ratio = target_vpp / (measured_vpp + 0.001f);
         if (ratio > 1.3f) ratio = 1.3f;
         if (ratio < 0.7f) ratio = 0.7f;
         current_gain_linear *= ratio;
-
-        if (current_gain_linear > 100.0f) {
-            current_gain_linear = 100.0f;
-        }
-        if (current_gain_linear < 0.001f) {
-            current_gain_linear = 0.001f;
-        }
+        if (current_gain_linear > 100.0f) current_gain_linear = 100.0f;
+        if (current_gain_linear < 0.001f) current_gain_linear = 0.001f;
     }
 
     return measured_vpp;
 }
 
 /* ===== AD637 RMS闭环校准: 用DC电压闭环(全频段通用, 不受Nyquist限制) ===== */
-static float CalibrateToVpp_AD637(uint32_t freq_hz, float target_vpp)
+static float CalibrateToVpp_AD637(uint32_t freq_hz, float target_vpp, float *out_gain)
 {
     float gain = 1.0f;
-    float dc_measured = 0.0f;
+    float dc_mv = 0.0f;
+    float target_mv = target_vpp * 1000.0f;  /* 统一用mV */
 
     DDS_SetFrequency(freq_hz);
 
@@ -173,21 +164,18 @@ static float CalibrateToVpp_AD637(uint32_t freq_hz, float target_vpp)
             extern volatile uint8_t ads8688_sample_request;
             ads8688_sample_request = 1;
             ADS8688_Service();
-            sum += ADS8688_CodeToMilliVolt(v_suoxiang[1]);  /* CH2=AD637 */
-            for (volatile int d = 0; d < 50; d++) __NOP();  /* 小延时 */
+            sum += ADS8688_CodeToMilliVolt(v_suoxiang[1]);  /* CH1=丝印CH2=AD637 */
+            for (volatile int d = 0; d < 50; d++) __NOP();
         }
-        dc_measured = sum / 128.0f;
+        dc_mv = sum / 128.0f;
 
-        float dev_vpp = fabsf(dc_measured) * 2.828f;
-        printf("[CAL-637] freq=%luHz gain=%.2f dc=%.1fmV dev=%.0fmVpp target=%.0fmVpp\r\n",
-               freq_hz, gain, dc_measured, dev_vpp, target_vpp * 1000.0f);
+        float dev_mvpp = fabsf(dc_mv) * 2.828f;
+        if (dev_mvpp < 15.0f) break;   /* <15mVpp, 止损 */
 
-        if (dev_vpp < 0.015f) break;   /* 读不到信号, 止损 */
-
-        float err = (dev_vpp - target_vpp) / target_vpp;
+        float err = (dev_mvpp - target_mv) / target_mv;
         if (fabsf(err) < 0.03f) break;  /* 3% 以内收敛 */
 
-        float ratio = target_vpp / (dev_vpp + 0.01f);
+        float ratio = target_mv / (dev_mvpp + 10.0f);
         if (ratio > 1.5f) ratio = 1.5f;  /* 阻尼 */
         if (ratio < 0.5f) ratio = 0.5f;
         gain *= ratio;
@@ -195,7 +183,8 @@ static float CalibrateToVpp_AD637(uint32_t freq_hz, float target_vpp)
         if (gain < 0.001f) gain = 0.001f;
     }
 
-    return fabsf(dc_measured) * 2.828f;
+    if (out_gain) *out_gain = gain;
+    return fabsf(dc_mv) * 2.828f / 1000.0f;  /* 返回Vpp(V) */
 }
 
 /* ===== 把【装置自身输出】闭环调到 target_vpp（基本3/4 用） =====
@@ -212,7 +201,7 @@ static float SetDeviceOutputVpp(uint32_t freq_hz, float target_vpp)
         VGA_SetGain_Linear(gain);
         HAL_Delay(50);
 
-        ADC_Measure_Start(0);  /* CH0 = 装置自身输出 */
+        ADC_Measure_Start(1);  /* CH1=丝印CH2, CH0坏了 */
         extern volatile uint8_t ads8688_sample_request;
         while (!ADC_Measure_IsDone()) {
             ads8688_sample_request = 1;
@@ -348,7 +337,6 @@ int main(void)
   MX_TIM7_Init();
   MX_DAC_Init();
   MX_TIM6_Init();
-  MX_SPI3_Init();
   MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
   setvbuf(stdout, NULL, _IONBF, 0);   /* printf 无缓冲，立即发送 */
@@ -389,9 +377,17 @@ int main(void)
       HAL_DAC_ConfigChannel(&hdac, &ch1_cfg, DAC_CHANNEL_1);
   }
 
-    printf("=== KEY0=开始采样 ===\r\n");
+    {
+        /* 启动后不打印电压, 等按键触发 */
+        extern volatile uint8_t ads8688_sample_request;
+        for (int i = 0; i < 100; i++) {
+            ads8688_sample_request = 1;
+            ADS8688_Service();   /* 预热auto-seq */
+        }
+    }
+    printf("KEY0=校准 KEY1=测量\r\n");
     DDS_SetFrequency(1000);
-    VGA_SetGain_Linear(2.0f);  /* DDS 0.66×2×5=6.6Vpp, 留余量 */
+    VGA_SetGain_Linear(1.0f);
     HAL_GPIO_WritePin(LED0_GPIO_Port, LED0_Pin, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
@@ -404,36 +400,66 @@ int main(void)
     ADS8688_Service();       /* 维持 ADC 数据就绪 */
     ADC_Measure_Service();   /* 采集中则收集数据点 */
 
-    /* ---- 调试模式: AD637 校准 + 测量 ---- */
+    /* ---- 发挥(1) 两点法学习: KEY0校准 KEY1测量 ---- */
     {
-        extern volatile uint8_t  dbg_active;
-        extern volatile uint8_t  dbg_need_cal;
-        extern volatile uint8_t  dbg_measure;
-        extern volatile uint32_t dbg_freq;
-        extern volatile float    dbg_dev_vpp;
+        extern volatile uint8_t  learn_need_cal;
+        extern volatile uint8_t  learn_need_meas;
+        extern volatile uint8_t  learn_phase;
+        extern volatile uint8_t  learn_freq_idx;
+        extern volatile uint32_t learn_cur_freq;
+        extern volatile float    learn_dev_vpp[2];
+        extern volatile float    learn_cir_vpp[2];
+        extern volatile float    learn_dev_gain[2];
 
-        /* KEY0: AD637校准装置输出(637输入接装置输出) */
-        if (dbg_active && dbg_need_cal) {
-            dbg_need_cal = 0;
-            dbg_dev_vpp = CalibrateToVpp_AD637(dbg_freq, 2.0f);
-            printf("=== CAL OK: %luHz 装置=%.0fmVpp | 切637到电路输出, 按KEY1测量 ===\r\n",
-                   dbg_freq, dbg_dev_vpp * 1000.0f);
+        if (learn_need_cal) {
+            learn_need_cal = 0;
+            float gain = 1.0f;
+            float vpp = CalibrateToVpp_AD637(learn_cur_freq, 2.0f, &gain);
+            learn_dev_vpp[learn_freq_idx] = vpp;
+            learn_dev_gain[learn_freq_idx] = gain;
+            printf("校准%luHz: 装置=%.0fmVpp\r\n", learn_cur_freq, vpp * 1000.0f);
+            learn_freq_idx++;
+            if (learn_freq_idx >= 2) {
+                learn_phase = 1;
+                learn_freq_idx = 0;
+                printf("校准完毕, 切637到电路输出, 按KEY1\r\n");
+            }
         }
 
-        /* KEY1: AD637测电路输出(637输入接电路输出) */
-        if (dbg_measure && ads8688_data_ready) {
-            static float dc_sum = 0;
-            static uint16_t n = 0;
-            ads8688_data_ready = 0;
-            dc_sum += ADS8688_CodeToMilliVolt(v_suoxiang[1]);
-            if (++n >= 256) {
-                float dc_avg  = dc_sum / 256.0f;
-                float vpp_out = fabsf(dc_avg) * 2.828f;
-                float ratio   = (vpp_out > 5) ? (dbg_dev_vpp * 1000.0f / vpp_out) : 999.0f;
-                printf(">>> %luHz 装置=%.0fmVpp 电路=%.0fmVpp R=%.2f [%s] <<<\r\n",
-                       dbg_freq, dbg_dev_vpp*1000, vpp_out, ratio,
-                       (ratio<2)?"通":"阻");
-                n = 0; dc_sum = 0; dbg_measure = 0;
+        if (learn_need_meas) {
+            learn_need_meas = 0;
+            DDS_SetFrequency(learn_cur_freq);
+            VGA_SetGain_Linear(learn_dev_gain[learn_freq_idx]);
+            HAL_Delay(50);
+            float sum = 0;
+            extern volatile uint8_t ads8688_sample_request;
+            for (int i = 0; i < 256; i++) {
+                ads8688_sample_request = 1;
+                ADS8688_Service();
+                sum += ADS8688_CodeToMilliVolt(v_suoxiang[1]);
+                for (volatile int d = 0; d < 100; d++) __NOP();
+            }
+            float dc = sum / 256.0f;
+            float vpp = fabsf(dc) * 2.828f;
+            learn_cir_vpp[learn_freq_idx] = vpp;
+            float ratio = (vpp > 5) ? (learn_dev_vpp[learn_freq_idx] * 1000.0f / vpp) : 999.0f;
+            printf("%luHz 装置%umVpp 电路%umVpp R=%.2f %s\r\n",
+                   (unsigned long)learn_cur_freq,
+                   (unsigned int)(learn_dev_vpp[learn_freq_idx] * 1000),
+                   (unsigned int)vpp, ratio,
+                   (ratio < 2) ? "通" : "阻");
+            learn_freq_idx++;
+            if (learn_freq_idx >= 2) {
+                learn_phase = 2;
+                float r0 = (learn_cir_vpp[0] > 5) ? (learn_dev_vpp[0] * 1000 / learn_cir_vpp[0]) : 999;
+                float r1 = (learn_cir_vpp[1] > 5) ? (learn_dev_vpp[1] * 1000 / learn_cir_vpp[1]) : 999;
+                int lo = (r0 < 2), hi = (r1 < 2);
+                const char *type = "?";
+                if (lo && !hi) type = "低通";
+                else if (!lo && hi) type = "高通";
+                else if (!lo && !hi) type = "带通";
+                else type = "带阻";
+                printf(">>> %s <<<\r\n", type);
             }
         }
     }

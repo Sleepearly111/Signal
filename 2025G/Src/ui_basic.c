@@ -274,31 +274,49 @@ void UI_UpdateDisplay(uint32_t freq_hz, float vpp)
 }
 
 /*
- * 按键 EXTI 回调
- * KEY0 (PE4) → 基本(3)
- * KEY1 (PE3) → 基本(4)
+ * 发挥(1) 两点法学习状态机
+ * KEY0: 校准(AD637→装置输出), 先1kHz再60kHz
+ * KEY1: 测量(AD637→电路输出), 先1kHz再60kHz, 收齐后判类型
  */
-volatile uint8_t  dbg_active   = 0;
-volatile uint32_t dbg_freq     = 0;
-volatile uint8_t  dbg_step     = 0;
-volatile uint8_t  dbg_need_cal = 0;  /* 1=AD637校准 */
-volatile uint8_t  dbg_measure  = 0;  /* 1=AD637测电路 */
-volatile float    dbg_dev_vpp   = 0;
+#define LEARN_FREQ_COUNT 2
+const uint32_t learn_freqs[LEARN_FREQ_COUNT] = {3000, 1000000};
+
+volatile uint8_t  learn_phase     = 0;  /* 0=校准, 1=测量, 2=完成 */
+volatile uint8_t  learn_freq_idx  = 0;
+volatile uint8_t  learn_need_cal  = 0;
+volatile uint8_t  learn_need_meas = 0;
+volatile uint32_t learn_cur_freq  = 0;
+volatile float    learn_dev_vpp[LEARN_FREQ_COUNT];
+volatile float    learn_cir_vpp[LEARN_FREQ_COUNT];
+volatile float    learn_dev_gain[LEARN_FREQ_COUNT];
 
 void UI_KeyCallback(uint8_t key_id)
 {
-    if (key_id == 0) {        /* KEY0 → 切频 + AD637校准(637输入接装置输出) */
-        const uint32_t f[] = {100, 1000, 3000, 5000, 60000};
-        dbg_step = (dbg_step + 1) % 5;
-        dbg_freq = f[dbg_step];
-        dbg_active = 1;
-        dbg_need_cal = 1;
-        dbg_measure  = 0;
-        printf("=== KEY0: %luHz 校准(637→装置输出) ===\r\n", dbg_freq);
-    } else if (key_id == 1) { /* KEY1 → AD637测电路(637输入接电路输出) */
-        if (dbg_dev_vpp > 0.5f) {
-            dbg_measure = 1;
-            printf("=== KEY1: 测量(637→电路输出) ===\r\n");
+    if (key_id == 0) {  /* KEY0: 校准(637→装置输出) */
+        if (learn_phase == 0) {
+            learn_cur_freq = learn_freqs[learn_freq_idx];
+            learn_need_cal = 1;
+            printf("KEY0: 校准%luHz\r\n", learn_cur_freq);
+        } else {
+            printf("已校准, 请按KEY1\r\n");
+        }
+    } else if (key_id == 1) {  /* KEY1: 测量(637→电路输出) */
+        if (learn_phase == 0) {
+            printf("请先按KEY0校准\r\n");
+        } else if (learn_phase == 1) {
+            learn_cur_freq = learn_freqs[learn_freq_idx];
+            learn_need_meas = 1;
+            printf("KEY1: 测量%luHz\r\n", learn_cur_freq);
+        } else {
+            float r0 = (learn_cir_vpp[0] > 5) ? (learn_dev_vpp[0] * 1000 / learn_cir_vpp[0]) : 999;
+            float r1 = (learn_cir_vpp[1] > 5) ? (learn_dev_vpp[1] * 1000 / learn_cir_vpp[1]) : 999;
+            int lo = (r0 < 2), hi = (r1 < 2);
+            const char *type = "?";
+            if (lo && !hi) type = "低通";
+            else if (!lo && hi) type = "高通";
+            else if (!lo && !hi) type = "带通";
+            else type = "带阻";
+            printf(">>> %s <<<\r\n", type);
         }
     }
 }

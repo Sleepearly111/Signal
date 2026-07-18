@@ -14,6 +14,7 @@ typedef enum {
     ADS8688_ERR_POWER_DOWN,
     ADS8688_ERR_RANGE_CH0,
     ADS8688_ERR_RANGE_CH1,
+    ADS8688_ERR_RANGE_CH2,
     ADS8688_ERR_RANGE_CH3
 } ADS8688_Status_t;
 
@@ -36,6 +37,8 @@ void ADS8688A_WriteCommandReg(uint16_t command);//写ADS8688命令寄存器
 uint8_t ADS8688A_READ_Program_Register(uint8_t Addr);
 uint16_t Get_MAN_Ch_n_Mode_Data(void);
 void MAN_Ch_n_Mode(uint16_t ch);//选择输入通道
+uint16_t ADS8688_ReadCH1(void);  /* 手动读 CH1(丝印CH2) */
+uint16_t ADS8688_ReadCH2(void);  /* 手动读 CH2(丝印CH3) */
 void Set_CH_Range_Select(uint8_t ch, uint8_t range);//设置各个通道的范围
 void ADS8688A_Write_Program_Register(uint8_t Addr, uint8_t data);
 void AUTO_RST_Mode(void);
