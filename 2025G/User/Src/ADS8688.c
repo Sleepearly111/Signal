@@ -15,7 +15,7 @@ static uint8_t ads8688_busy = 0U;
 #define ADS8688_RANGE_CH0_REG     0x05U
 #define ADS8688_RANGE_CH1_REG     0x06U
 #define ADS8688_RANGE_CH3_REG     0x08U
-#define ADS8688_AUTO_SEQ_CH0_CH1  0x03U  /* CH0(丝印CH1) + CH1(丝印CH2) */
+#define ADS8688_AUTO_SEQ_CH0_CH3  0x09U  /* CH0(丝印CH1) + CH3(丝印CH4) */
 #define ADS8688_POWER_DOWN_CH2_7  0xFCU  /* CH0/CH1 使能, CH2~7 断电 */
 #define ADS8688_RANGE_PM_5V12     0x71U  /* bits[3:0]=1 ±5.12V, bits[6:4]=111 LPF旁路 */
 

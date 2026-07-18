@@ -9,6 +9,7 @@
 /* STM32 HAL DAC */
 #include "stm32f4xx_hal.h"
 extern DAC_HandleTypeDef hdac;
+extern TIM_HandleTypeDef htim8;
 
 /* 当前频率 Hz（用于幅度校准时不变更频率） */
 static uint32_t current_freq_hz = 1000;
@@ -73,4 +74,23 @@ void DDS_Output_Config(uint32_t freq_hz, float gain_linear)
 {
     DDS_SetFrequency(freq_hz);
     VGA_SetGain_Linear(gain_linear);
+}
+
+/* ===== LTC1068 可编程低通 (PC6=TIM8_CH1) =====
+ * fc = CLK/100  (或 /50, 看模块 MODE 引脚)
+ * CLK = PWM频率 = 168MHz/(ARR+1), PSC=0 */
+void LTC1068_Init(void)
+{
+    HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
+    LTC1068_SetCutoff(25000);  /* 默认 25kHz 抗混叠 */
+}
+
+void LTC1068_SetCutoff(uint32_t fc_hz)
+{
+    uint32_t clk = fc_hz * 100;          /* /100 模式 */
+    uint32_t arr = 168000000 / clk;       /* TIM8 @ 168MHz */
+    if (arr < 2) arr = 2;
+    if (arr > 65535) arr = 65535;
+    __HAL_TIM_SET_AUTORELOAD(&htim8, arr - 1);
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, arr / 2);
 }

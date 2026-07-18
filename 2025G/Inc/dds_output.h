@@ -18,4 +18,8 @@ void VGA_SetGain_Linear(float gain_linear);
 /* 便捷组合: 同时设频率 + 线性增益 */
 void DDS_Output_Config(uint32_t freq_hz, float gain_linear);
 
+/* LTC1068 可编程低通滤波器 (PC6=TIM8_CH1) */
+void LTC1068_Init(void);
+void LTC1068_SetCutoff(uint32_t fc_hz);
+
 #endif /* DDS_OUTPUT_H */

@@ -6,10 +6,10 @@
 
 /* AD603 增益曲线: Gain(dB) = Vg × SLOPE + OFFSET
  * 实测拟合(5点): G = 75.97×Vg - 49.30 (dB)
- * 有效范围: Vg=0.7~1.1V 对应 3~33dB
+ * Vg 有效范围: 0.4~1.4V (硬件限定)
  */
-#define AD603_VG_MIN      0.0f
-#define AD603_VG_MAX      1.446f
+#define AD603_VG_MIN      0.4f
+#define AD603_VG_MAX      1.4f
 #define AD603_GAIN_SLOPE  75.97f    /* 实测拟合 */
 #define AD603_GAIN_OFFSET -49.30f   /* 实测拟合 */
 
