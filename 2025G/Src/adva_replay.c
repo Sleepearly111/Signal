@@ -23,8 +23,10 @@ extern void UI_SendToScreen(const char *fmt, ...);
 #define ASSUMED_INPUT_VPP         2.0f
 #define DAC_TIMER_CLOCK_HZ  84000000U
 #define REPORT_INTERVAL_MS      1000U
+#define DPLL_KP                   0.10f
+#define DPLL_KI                   0.001f
+#define DPLL_I_LIMIT_RAD          0.015f
 #define DPLL_STEP_LIMIT_RAD       0.050f
-#define DPLL_FREQ_SMOOTH_ALPHA    0.05f
 #define CONTEST_FREQ_STEP_HZ    100.0f
 #define AMPLITUDE_SMOOTH_ALPHA    0.05f
 
@@ -51,9 +53,7 @@ static float s_actual_output_freq;
 static uint32_t s_last_report_tick;
 static float s_dpll_phase_error;
 static float s_dpll_phase_step;
-static float s_dpll_frequency_error;
-static float s_dpll_frequency_estimate;
-static uint32_t s_last_dpll_cycle;
+static float s_dpll_integrator;
 
 static void replay_process(void);
 static void choose_dac_timing(float freq_hz);
@@ -187,9 +187,7 @@ void AdvReplay_Init(void)
     s_last_report_tick = 0U;
     s_dpll_phase_error = 0.0f;
     s_dpll_phase_step = 0.0f;
-    s_dpll_frequency_error = 0.0f;
-    s_dpll_frequency_estimate = 0.0f;
-    s_last_dpll_cycle = 0U;
+    s_dpll_integrator = 0.0f;
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0U;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
@@ -414,29 +412,30 @@ static void replay_process(void)
         }
         s_dpll_phase_error = 0.0f;
         s_dpll_phase_step = 0.0f;
+        s_dpll_integrator = 0.0f;
         synthesize_waveform(s_dac_length);
         dac_start(s_dac_length);
-        s_dpll_frequency_estimate = freq;
-        s_dpll_frequency_error = freq - s_actual_output_freq;
-        s_last_dpll_cycle = DWT->CYCCNT;
     } else if (s_wave_type == WAVE_SINE && s_dac_length > 0U) {
-        /* Smooth frequency-difference feed-forward.  At high frequency the
-         * DMA sample index is too coarse for a quiet absolute phase detector.
-         * Instead, keep the stable quantized timer and continuously rotate the
-         * waveform by exactly the measured source/timer frequency difference.
-         * This removes fast drift without any hard DAC restart. */
-        uint32_t current_cycle = DWT->CYCCNT;
-        float elapsed_seconds =
-            (float)(current_cycle - s_last_dpll_cycle) /
-            (float)HAL_RCC_GetHCLKFreq();
-        s_last_dpll_cycle = current_cycle;
-        s_dpll_frequency_estimate += DPLL_FREQ_SMOOTH_ALPHA *
-            (freq - s_dpll_frequency_estimate);
-        s_dpll_frequency_error = s_dpll_frequency_estimate -
-                                 s_actual_output_freq;
-        s_dpll_phase_error = 0.0f;
-        s_dpll_phase_step = 2.0f * (float)M_PI *
-                            s_dpll_frequency_error * elapsed_seconds;
+        /* Continuous DPLL: compare the live input/circuit target phase with
+         * the phase of the sample currently being consumed by DAC DMA.  The
+         * PI correction advances the table phase a little at a time; TIM6 and
+         * DAC DMA remain running, so there is no periodic hard phase reset. */
+        uint32_t remaining = __HAL_DMA_GET_COUNTER(&hdma_dac2);
+        uint32_t sample_index =
+            (s_dac_length - (remaining % s_dac_length)) % s_dac_length;
+        float target_phase = wrap_phase(s_output_phase[0] +
+            2.0f * (float)M_PI * freq * processing_seconds);
+        float playing_phase = wrap_phase(s_play_phase[0] +
+            2.0f * (float)M_PI * (float)sample_index /
+            (float)s_dac_length);
+        s_dpll_phase_error = wrap_phase(target_phase - playing_phase);
+        s_dpll_integrator += DPLL_KI * s_dpll_phase_error;
+        if (s_dpll_integrator > DPLL_I_LIMIT_RAD)
+            s_dpll_integrator = DPLL_I_LIMIT_RAD;
+        if (s_dpll_integrator < -DPLL_I_LIMIT_RAD)
+            s_dpll_integrator = -DPLL_I_LIMIT_RAD;
+        s_dpll_phase_step = DPLL_KP * s_dpll_phase_error +
+                            s_dpll_integrator;
         if (s_dpll_phase_step > DPLL_STEP_LIMIT_RAD)
             s_dpll_phase_step = DPLL_STEP_LIMIT_RAD;
         if (s_dpll_phase_step < -DPLL_STEP_LIMIT_RAD)
@@ -469,8 +468,8 @@ static void replay_process(void)
            "  模型在主频处: 增益=%.4f 相移=%.1f度\r\n"
            "  预计未知电路输出: 主频=%.1fHz 基波幅度=%.4fV 合成Vpp=%.4fV 交流RMS=%.4fV\r\n"
            "  DAC输出: PA5 点数=%lu TIM6分频=%lu 目标频率=%.2fHz 实际频率=%.2fHz 误差=%.3fHz 状态=%s\r\n"
-           "  连续锁频: 平滑输入=%.3fHz 与DAC频差=%.3fHz 本帧相位推进=%.3f度\r\n"
-           "  相位同步: 已叠加未知电路相移，频差连续补偿，计时参数不变时不重启DAC\r\n",
+           "  数字PLL: 相位误差=%.2f度 本帧修正=%.3f度 积分项=%.3f度\r\n"
+           "  相位同步: 已叠加未知电路相移，PLL连续微调，计时参数不变时不重启DAC\r\n",
            (unsigned long)++s_report_index, input_mean, input_min, input_max,
            input_vpp, input_rms, input_vpp, (double)ASSUMED_INPUT_VPP,
            input_scale, normalized_input_rms, wave_type_name(s_wave_type), freq,
@@ -484,8 +483,9 @@ static void replay_process(void)
            (unsigned long)s_tim6_divisor, target_freq, s_actual_output_freq,
            s_actual_output_freq - target_freq,
            s_dac_active ? "运行" : "失败",
-           s_dpll_frequency_estimate, s_dpll_frequency_error,
-           s_dpll_phase_step * 180.0f / (float)M_PI);
+           s_dpll_phase_error * 180.0f / (float)M_PI,
+           s_dpll_phase_step * 180.0f / (float)M_PI,
+           s_dpll_integrator * 180.0f / (float)M_PI);
     UI_SendToScreen("t0.txt=\"%.2fkHz\"", target_freq / 1000.0f);
     UI_SendToScreen("t1.txt=\"Replay type %u\"", s_wave_type);
 }
