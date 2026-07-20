@@ -29,8 +29,8 @@ void UI_Service(void);
 /* 更新串口屏显示 */
 void UI_UpdateDisplay(uint32_t freq_hz, float vpp);
 
-/* 用户按键触发处理 (在 EXTI 回调中调用)
- * key_id: 0=KEY0→发挥(1)学习, 1=KEY1→基本(4) */
+/* Physical keys: KEY0 starts learning; KEY1 continues after manual rewiring;
+ * after learning is complete, KEY1 starts replay. */
 void UI_KeyCallback(uint8_t key_id);
 
 /* USART1 接收完成回调：由 HAL_UART_RxCpltCallback 调用 */

@@ -1,6 +1,7 @@
 #include "ui_basic.h"
 #include "app_config.h"
 #include "stm32f4xx_hal.h"
+#include "adva_learn.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -273,50 +274,27 @@ void UI_UpdateDisplay(uint32_t freq_hz, float vpp)
     UI_SendToScreen("message.txt=\"%s\"", mode_str);
 }
 
-/*
- * 发挥(1) 两点法学习状态机
- * KEY0: 校准(AD637→装置输出), 先1kHz再60kHz
- * KEY1: 测量(AD637→电路输出), 先1kHz再60kHz, 收齐后判类型
- */
-#define LEARN_FREQ_COUNT 2
-const uint32_t learn_freqs[LEARN_FREQ_COUNT] = {3000, 1000000};
-
-volatile uint8_t  learn_phase     = 0;  /* 0=校准, 1=测量, 2=完成 */
-volatile uint8_t  learn_freq_idx  = 0;
-volatile uint8_t  learn_need_cal  = 0;
-volatile uint8_t  learn_need_meas = 0;
-volatile uint32_t learn_cur_freq  = 0;
-volatile float    learn_dev_vpp[LEARN_FREQ_COUNT];
-volatile float    learn_cir_vpp[LEARN_FREQ_COUNT];
-volatile float    learn_dev_gain[LEARN_FREQ_COUNT];
-
 void UI_KeyCallback(uint8_t key_id)
 {
-    if (key_id == 0) {  /* KEY0: 校准(637→装置输出) */
-        if (learn_phase == 0) {
-            learn_cur_freq = learn_freqs[learn_freq_idx];
-            learn_need_cal = 1;
-            printf("KEY0: 校准%luHz\r\n", learn_cur_freq);
-        } else {
-            printf("已校准, 请按KEY1\r\n");
+    if (key_id == 0U) {
+        if (AdvLearn_IsWaitingForRewire()) {
+            printf("[LEARN] Move AD637 first, then press KEY1\r\n");
+            return;
         }
-    } else if (key_id == 1) {  /* KEY1: 测量(637→电路输出) */
-        if (learn_phase == 0) {
-            printf("请先按KEY0校准\r\n");
-        } else if (learn_phase == 1) {
-            learn_cur_freq = learn_freqs[learn_freq_idx];
-            learn_need_meas = 1;
-            printf("KEY1: 测量%luHz\r\n", learn_cur_freq);
+        if (AdvLearn_IsDone()) {
+            AdvLearn_Init();
+        }
+        g_mode = MODE_LEARN;
+        printf("[LEARN] KEY0 start\r\n");
+    } else if (key_id == 1U) {
+        if (AdvLearn_IsWaitingForRewire()) {
+            AdvLearn_ContinueAfterRewire();
+            g_mode = MODE_LEARN;
+        } else if (AdvLearn_GetModel()->valid) {
+            g_mode = MODE_REPLAY;
+            printf("[REPLAY] KEY1 start\r\n");
         } else {
-            float r0 = (learn_cir_vpp[0] > 5) ? (learn_dev_vpp[0] * 1000 / learn_cir_vpp[0]) : 999;
-            float r1 = (learn_cir_vpp[1] > 5) ? (learn_dev_vpp[1] * 1000 / learn_cir_vpp[1]) : 999;
-            int lo = (r0 < 2), hi = (r1 < 2);
-            const char *type = "?";
-            if (lo && !hi) type = "低通";
-            else if (!lo && hi) type = "高通";
-            else if (!lo && !hi) type = "带通";
-            else type = "带阻";
-            printf(">>> %s <<<\r\n", type);
+            printf("[LEARN] KEY1 ignored: learn model first\r\n");
         }
     }
 }

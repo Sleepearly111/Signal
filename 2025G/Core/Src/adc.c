@@ -21,6 +21,8 @@
 #include "adc.h"
 
 /* USER CODE BEGIN 0 */
+#include "app_config.h"
+#include "tim.h"
 uint16_t ADC1_ConvertedValue[ADC1_DMA_Size];
 
 volatile uint8_t adc1_dma_finish_flag = 0;
@@ -55,7 +57,7 @@ void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -162,9 +164,21 @@ HAL_StatusTypeDef ADC_DMA_Trig(uint16_t Size)
 
     adc1_dma_finish_flag = 0;
 
+    HAL_TIM_Base_Stop(&htim3);
     HAL_ADC_Stop_DMA(&hadc1);
+
+    uint32_t period = 84000000U / DSP_SAMPLE_RATE;
+    if (period < 2U) period = 2U;
+    __HAL_TIM_SET_PRESCALER(&htim3, 0U);
+    __HAL_TIM_SET_AUTORELOAD(&htim3, period - 1U);
+    __HAL_TIM_SET_COUNTER(&htim3, 0U);
     if (HAL_ADC_Start_DMA(&hadc1, (uint32_t*)ADC1_ConvertedValue, Size) != HAL_OK)
     {
+        return HAL_ERROR;
+    }
+    if (HAL_TIM_Base_Start(&htim3) != HAL_OK)
+    {
+        HAL_ADC_Stop_DMA(&hadc1);
         return HAL_ERROR;
     }
     return HAL_OK;
@@ -179,6 +193,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance == ADC1)
     {
+        HAL_TIM_Base_Stop(&htim3);
         adc1_dma_finish_flag = 1;
 
         /*
@@ -210,6 +225,7 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance == ADC1)
     {
+        HAL_TIM_Base_Stop(&htim3);
         HAL_ADC_Stop_DMA(&hadc1);
     }
 }

@@ -33,6 +33,7 @@ extern "C" {
 /* USER CODE END Includes */
 
 extern DAC_HandleTypeDef hdac;
+extern DMA_HandleTypeDef hdma_dac2;
 
 /* USER CODE BEGIN Private defines */
 

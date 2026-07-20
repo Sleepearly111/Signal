@@ -64,18 +64,11 @@
 /* FFT 点数(2的幂): 频率分辨率=采样率/点数 ≈250k/2048≈122Hz,加插值可分辨200Hz步进 */
 #define DSP_FFT_SIZE      2048
 
-/* ADC 采样率 Hz(ADS8688): >100kHz(Nyquist),取250kHz 兼顾频谱分辨率 */
-#define DSP_SAMPLE_RATE   250000
+/* PB1/ADC1 timer-triggered sampling rate used by replay FFT. */
+#define DSP_SAMPLE_RATE   1000000U
 
-/* DAC 整周期波形点数: 点数多→波形平滑,但高频受 DAC 更新率限制(F407 DAC ~300ksps max) */
-#define DSP_DAC_LENGTH    256    /* TODO: 联调可调,高频平滑不够可降到128或64 */
-
-/* FIR/LMS 参数(与参考方案一致,BLOCK_SIZE降至2048省RAM) */
-#define LMS_NUM_TAPS      32     /* FIR 阶数 */
-#define LMS_STEP_SIZE     0.001f /* LMS 收敛步长 */
-#define LMS_BLOCK_SIZE    2048   /* 每次 LMS 处理的采样点数(32阶/2048点够收敛) */
-
-/* 谐波合成参数 */
-#define DSP_HARMONIC_MAX  10     /* 最多取到 19 次谐波(奇次) */
+/* Replay DAC uses 16/32/64/128 points dynamically and caps update rate. */
+#define DSP_DAC_LENGTH_MAX 128U
+#define DSP_DAC_UPDATE_MAX 800000U
 
 #endif /* APP_CONFIG_H */

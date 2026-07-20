@@ -1,41 +1,39 @@
 #ifndef ADVA_LEARN_H
 #define ADVA_LEARN_H
 
-#include "app_config.h"
-#include "arm_math.h"
 #include <stdint.h>
 
-/* ===== 发挥(1): 未知电路自主学习建模 =====
- * 按键启动 → 1kHz FFT 测低频通带
- * → 扫频(1k~60k@200Hz) LMS 逐频点收敛出 32阶 FIR
- * → 60kHz FFT 测高频阻带 → 两点幅值比判滤波类型 → 串口屏显示
- * 总时间 <2 分钟(题目要求), 全程不借助外部仪器。 */
+/* Filter types required by the problem statement. */
+#define FILTER_LOW_PASS    1U
+#define FILTER_HIGH_PASS   2U
+#define FILTER_BAND_PASS   3U
+#define FILTER_BAND_STOP   4U
 
-/* 滤波类型 */
-#define FILTER_LOW_PASS    1
-#define FILTER_HIGH_PASS   2
-#define FILTER_BAND_PASS   3
-#define FILTER_BAND_STOP   4
+/* AD637 magnitude sweep: 1 kHz .. 60 kHz, 200 Hz step. */
+#define SWEEP_FREQ_START_HZ  1000U
+#define SWEEP_FREQ_END_HZ   60000U
+#define SWEEP_FREQ_STEP_HZ    200U
+#define SWEEP_POINT_COUNT \
+    (((SWEEP_FREQ_END_HZ - SWEEP_FREQ_START_HZ) / SWEEP_FREQ_STEP_HZ) + 1U)
 
-/* 扫频参数(与参考方案一致) */
-#define SWEEP_FREQ_START    1000.0f   /* 1kHz */
-#define SWEEP_FREQ_1_END    60100.0f  /* 第一段终点 Hz(参考代码上界) */
-#define SWEEP_FREQ_2_START  60000.0f  /* 第二段起点 */
-#define SWEEP_FREQ_2_END    1010000.0f/* 第二段终点(过了1M即止) */
-#define SWEEP_STEP_1        200       /* 1k~60k 步进 200Hz */
-#define SWEEP_STEP_2        10000     /* 60k~1M 步进 10kHz */
+typedef struct {
+    uint8_t valid;
+    uint8_t filter_type;
+    float gain;
+    float f0_hz;
+    float q;
+} AdvLearnModel;
 
-/* FIR 系数表大小: (60100-1000)/200+1 = 296 组 */
-#define FIR_TABLE_ROWS  (((uint32_t)SWEEP_FREQ_1_END - (uint32_t)SWEEP_FREQ_START) / SWEEP_STEP_1 + 1)
+void AdvLearn_Init(void);
+void AdvLearn_Start(void);
+void AdvLearn_Service(void);
+void AdvLearn_ContinueAfterRewire(void);
+uint8_t AdvLearn_IsWaitingForRewire(void);
+uint8_t AdvLearn_IsDone(void);
+uint8_t AdvLearn_GetFilterType(void);
+const AdvLearnModel *AdvLearn_GetModel(void);
 
-/* ===== API ===== */
-void AdvLearn_Init(void);       /* 系统启动时调用一次 */
-void AdvLearn_Start(void);      /* 按下"学习键"后调用, 启动扫频学习 */
-void AdvLearn_Service(void);    /* 主循环中调用, 非阻塞推进状态机 */
-uint8_t AdvLearn_IsDone(void);  /* 学习完成返回 1 */
-uint8_t AdvLearn_GetFilterType(void); /* 返回 FILTER_xxx 或 0(尚未判出) */
-
-/* FIR 系数表(外部可读, 发挥2 查表用) */
-extern float32_t g_fir_table[FIR_TABLE_ROWS][LMS_NUM_TAPS];
+/* Returns measured magnitude and fitted phase at an arbitrary frequency. */
+uint8_t AdvLearn_GetResponse(float freq_hz, float *magnitude, float *phase_rad);
 
 #endif /* ADVA_LEARN_H */
