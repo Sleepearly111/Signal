@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.16)
+project(sweep_service_module LANGUAGES C)
+
+add_library(sweep_service STATIC src/sweep_service.c)
+target_include_directories(sweep_service PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(sweep_service PUBLIC c_std_11)
+
+if(MSVC)
+    target_compile_options(sweep_service PRIVATE /W4 /WX)
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(sweep_service PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(SIGNAL_FRAMEWORK_BUILD_TESTS OR PROJECT_IS_TOP_LEVEL)
+    enable_testing()
+    add_executable(sweep_service_tests tests/test_sweep_service.c)
+    target_link_libraries(sweep_service_tests PRIVATE sweep_service)
+    target_compile_features(sweep_service_tests PRIVATE c_std_11)
+    add_test(NAME sweep_service_tests COMMAND sweep_service_tests)
+endif()

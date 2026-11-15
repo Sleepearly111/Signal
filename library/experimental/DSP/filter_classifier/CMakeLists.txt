@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.16)
+project(filter_classifier_module LANGUAGES C)
+
+add_library(filter_classifier STATIC src/filter_classifier.c)
+target_include_directories(filter_classifier PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(filter_classifier PUBLIC c_std_11)
+
+if(MSVC)
+    target_compile_options(filter_classifier PRIVATE /W4 /WX)
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(filter_classifier PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(SIGNAL_FRAMEWORK_BUILD_TESTS OR PROJECT_IS_TOP_LEVEL)
+    enable_testing()
+    add_executable(filter_classifier_tests tests/test_filter_classifier.c)
+    target_link_libraries(filter_classifier_tests PRIVATE filter_classifier)
+    target_compile_features(filter_classifier_tests PRIVATE c_std_11)
+    add_test(NAME filter_classifier_tests COMMAND filter_classifier_tests)
+endif()

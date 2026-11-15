@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.16)
+project(calibration_record_module LANGUAGES C)
+
+add_library(calibration_record STATIC src/calibration_record.c)
+target_include_directories(calibration_record PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(calibration_record PUBLIC c_std_11)
+
+if(MSVC)
+    target_compile_options(calibration_record PRIVATE /W4 /WX)
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(calibration_record PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+if(SIGNAL_FRAMEWORK_BUILD_TESTS OR PROJECT_IS_TOP_LEVEL)
+    enable_testing()
+    add_executable(calibration_record_tests tests/test_calibration_record.c)
+    target_link_libraries(calibration_record_tests PRIVATE calibration_record)
+    target_compile_features(calibration_record_tests PRIVATE c_std_11)
+    add_test(NAME calibration_record_tests COMMAND calibration_record_tests)
+endif()

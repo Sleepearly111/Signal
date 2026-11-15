@@ -1,0 +1,86 @@
+#ifndef G2026_CONFIG_H
+#define G2026_CONFIG_H
+
+#include <stdint.h>
+
+#define G2026_SAMPLE_COUNT 4096U
+#define G2026_NOMINAL_SAMPLE_RATE_HZ 2000000U
+#define G2026_MAX_FFT_BIN_SPACING_HZ 500U
+#define G2026_MAX_INPUT_FREQUENCY_HZ 500000U
+#define G2026_MEASUREMENT_TIMEOUT_MS 2000U
+#define G2026_MOCK_EFFECTIVE_BITS 14U
+#ifndef G2026_ENABLE_BOOT_MOCK_SELFTEST
+#define G2026_ENABLE_BOOT_MOCK_SELFTEST 1U
+#endif
+
+#define G2026_HW_VARIANT_AD9280_SINGLE 1U
+#define G2026_HW_VARIANT_AD9248_SINGLE 2U
+#define G2026_HW_VARIANT_AD9248_DUAL 3U
+#define G2026_HW_VARIANT_AD9248_SINGLE_AD8421 4U
+
+#define G2026_FRONTEND_RANGE_UNKNOWN 0U
+#define G2026_FRONTEND_PATH_THS4001_INPUT 1U
+#define G2026_FRONTEND_PATH_THS4001_OUTPUT 2U
+#define G2026_FRONTEND_RANGE_LEGACY_GAIN_4X 3U
+#define G2026_FRONTEND_PATH_AD8421_OUTPUT 4U
+
+/*
+ * CMake normally supplies these three build-profile macros. The fallback
+ * values keep an editor-only or direct compiler invocation deterministic.
+ * DSP and FPGA packet parsing must not branch on nominal op-amp gain.
+ * The actual input millivolts-per-code value still comes from board
+ * calibration; "2X" and "4X" are range identities, not calibration values.
+ */
+#ifndef G2026_HW_VARIANT
+#define G2026_HW_VARIANT G2026_HW_VARIANT_AD9248_SINGLE
+#endif
+#ifndef G2026_CHANNEL0_FRONTEND_RANGE
+#define G2026_CHANNEL0_FRONTEND_RANGE G2026_FRONTEND_RANGE_UNKNOWN
+#endif
+#ifndef G2026_CHANNEL1_FRONTEND_RANGE
+#define G2026_CHANNEL1_FRONTEND_RANGE G2026_FRONTEND_RANGE_UNKNOWN
+#endif
+
+#if ((G2026_HW_VARIANT != G2026_HW_VARIANT_AD9280_SINGLE) && \
+     (G2026_HW_VARIANT != G2026_HW_VARIANT_AD9248_SINGLE) && \
+     (G2026_HW_VARIANT != G2026_HW_VARIANT_AD9248_DUAL) && \
+     (G2026_HW_VARIANT != G2026_HW_VARIANT_AD9248_SINGLE_AD8421))
+#error "Unsupported G2026 hardware variant"
+#endif
+
+#if ((G2026_CHANNEL0_FRONTEND_RANGE > G2026_FRONTEND_PATH_AD8421_OUTPUT) || \
+     (G2026_CHANNEL1_FRONTEND_RANGE > G2026_FRONTEND_PATH_AD8421_OUTPUT))
+#error "Unsupported G2026 front-end range"
+#endif
+
+#if ((G2026_HW_VARIANT == G2026_HW_VARIANT_AD9248_SINGLE_AD8421) && \
+     ((G2026_CHANNEL0_FRONTEND_RANGE != \
+       G2026_FRONTEND_PATH_AD8421_OUTPUT) || \
+      (G2026_CHANNEL1_FRONTEND_RANGE != G2026_FRONTEND_RANGE_UNKNOWN)))
+#error "AD8421 single build requires A=AD8421 output and B=unused"
+#endif
+
+#if ((G2026_HW_VARIANT == G2026_HW_VARIANT_AD9248_DUAL) && \
+     ((G2026_CHANNEL0_FRONTEND_RANGE != \
+       G2026_FRONTEND_PATH_THS4001_INPUT) || \
+      (G2026_CHANNEL1_FRONTEND_RANGE != \
+       G2026_FRONTEND_PATH_THS4001_OUTPUT)))
+#error "AD9248 dual THS4001 build requires A=input path and B=output path"
+#endif
+
+#if ((G2026_HW_VARIANT == G2026_HW_VARIANT_AD9248_SINGLE) && \
+     ((G2026_CHANNEL0_FRONTEND_RANGE != G2026_FRONTEND_RANGE_UNKNOWN) || \
+      (G2026_CHANNEL1_FRONTEND_RANGE != G2026_FRONTEND_RANGE_UNKNOWN)))
+#error "Current AD9248 single build is direct-input and has no external gain range"
+#endif
+
+#if (G2026_NOMINAL_SAMPLE_RATE_HZ < (2U * G2026_MAX_INPUT_FREQUENCY_HZ))
+#error "Nominal sample rate violates Nyquist"
+#endif
+
+#if ((G2026_NOMINAL_SAMPLE_RATE_HZ / G2026_SAMPLE_COUNT) > \
+     G2026_MAX_FFT_BIN_SPACING_HZ)
+#error "Nominal sample rate violates the 500 Hz FFT-bin requirement"
+#endif
+
+#endif
